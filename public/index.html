@@ -236,7 +236,7 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            editProf:null, editStudent:null, editParent:null, comportClass:null,
            msgScope:'eleves', msgClassId:null, msgRecType:'eleve', msgRecId:null, msgRecClassFilter:'',
            editSchoolNameId:null, contactSchoolId:null, contactData:null, contactLoading:false,
-           editClassId:null, editSubjectId:null, selectedStudents:[] };
+           editClassId:null, editSubjectId:null, selectedStudents:[], eleveClassFilter:'', openArchiveIdx:null };
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
@@ -395,7 +395,7 @@ const TABS = {
   admin:[ ['overview','Tableau de bord','#C9952C'], ['classes','Classes','#2F6B4F'], ['subjects','Matières','#1B2A4A'],
           ['schedule',"Emplois du temps",'#2F6B4F'], ['comptes','Comptes','#B23A33'], ['presences','Présences','#B23A33'],
           ['notes','Notes','#C9952C'], ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'],
-          ['comportement','Comportement','#A87820'], ['messagerie','Messagerie','#2E4271'] ],
+          ['comportement','Comportement','#A87820'], ['messagerie','Messagerie','#2E4271'], ['archives','Archives','#6B6B63'] ],
   prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
          ['programme','Programme annuel','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
          ['messagerie','Messages','#2E4271'] ],
@@ -479,6 +479,7 @@ function renderAdmin(){
   if(ui.adminTab==='agenda') return adminAgenda();
   if(ui.adminTab==='comportement') return adminComportement();
   if(ui.adminTab==='messagerie') return adminMessagerie();
+  if(ui.adminTab==='archives') return adminArchives();
 }
 
 function adminOverview(){
@@ -502,12 +503,140 @@ function adminOverview(){
     '<button class="btn-sm" onclick="exportYearExcel()">Exporter en Excel (.xlsx)</button>'+
     '<button class="btn-sm ghost" onclick="exportYearPDF()">Exporter en PDF</button>'+
   '</div></div>'+
+  '<div class="panel" style="border-color:var(--gold);">'+
+  '<div class="panel-head"><h3>Archiver l\'année et démarrer une nouvelle année</h3></div>'+
+  '<div class="sub" style="margin-bottom:14px;">L\'appel, les notes et le cahier de texte de l\'année en cours seront archivés (consultables en lecture seule dans l\'onglet "Archives") puis vidés pour repartir sur une base propre. Les classes, élèves, professeurs et parents ne sont pas touchés. Pense à exporter le bilan ci-dessus avant de continuer.</div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Nouvelle année scolaire</label><input id="archive-newyear" value="'+suggestNextYear(db.school.year)+'"></div>'+
+    '<button class="btn-sm" style="background:var(--gold);border-color:var(--gold);" onclick="confirmArchiveYear()">Archiver et démarrer la nouvelle année</button>'+
+  '</div></div>'+
   '<div class="panel"><div class="panel-head"><h3>Activité récente — cahier de texte</h3></div>'+
     (db.journal.slice(-4).reverse().map(j=>{
       const cls = db.classes.find(c=>c.id===j.classId), sub = db.subjects.find(s=>s.id===j.subjectId);
       return '<div class="entry"><div class="meta">'+j.date+' · '+(cls?cls.name:'')+' · '+(sub?sub.name:'')+'</div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+'</div>';
     }).join('') || '<div class="empty">Aucune entrée pour le moment.</div>')+
   '</div>';
+}
+function suggestNextYear(current){
+  const m = (current||'').match(/(\d{4})/);
+  if(!m) return '';
+  const y = parseInt(m[1],10);
+  return (y+1)+'–'+(y+2);
+}
+async function confirmArchiveYear(){
+  const newYear = document.getElementById('archive-newyear').value.trim();
+  if(!newYear) return showToast('Indiquez la nouvelle année scolaire');
+  if(!confirm('Archiver l\'année '+db.school.year+' et démarrer '+newYear+' ?\n\nL\'appel, les notes et le cahier de texte de cette année seront archivés puis vidés. Les élèves, professeurs, classes et parents restent inchangés.\n\nCette action est conseillée uniquement après avoir exporté le bilan.')) return;
+  if(!db.archives) db.archives = [];
+  db.archives.push({
+    year: db.school.year,
+    archivedAt: todayISO(),
+    attendance: db.attendance,
+    evals: db.evals,
+    grades: db.grades,
+    journal: db.journal
+  });
+  db.attendance = [];
+  db.evals = [];
+  db.grades = [];
+  db.journal = [];
+  db.school.year = newYear;
+  const { error } = await sb.from('schools').update({ year: newYear }).eq('id', session.schoolId);
+  if(error){ showToast('Erreur lors de la mise à jour de l\'année : '+error.message); }
+  await saveData();
+  renderShell();
+  showToast('Année archivée — bienvenue en '+newYear+' !');
+}
+async function restoreArchive(idx){
+  const a = (db.archives||[])[idx];
+  if(!a) return;
+  const hasNewData = db.attendance.length || db.evals.length || db.journal.length;
+  const warning = hasNewData
+    ? 'Restaurer l\'année '+a.year+' ?\n\nDes données existent déjà pour l\'année en cours ('+db.school.year+') — l\'appel, les notes et le cahier de texte de '+a.year+' seront rajoutés à côté, sans rien supprimer. L\'année affichée repassera à '+a.year+'.'
+    : 'Restaurer l\'année '+a.year+' ? L\'appel, les notes et le cahier de texte archivés seront remis en place, et l\'année affichée repassera à '+a.year+'.';
+  if(!confirm(warning)) return;
+  db.attendance = db.attendance.concat(a.attendance);
+  db.evals = db.evals.concat(a.evals);
+  db.grades = db.grades.concat(a.grades);
+  db.journal = db.journal.concat(a.journal);
+  db.school.year = a.year;
+  db.archives.splice(idx, 1);
+  const { error } = await sb.from('schools').update({ year: a.year }).eq('id', session.schoolId);
+  if(error){ showToast('Erreur lors de la mise à jour de l\'année : '+error.message); }
+  await saveData();
+  renderShell();
+  showToast('Année '+a.year+' restaurée');
+}
+
+function adminArchives(){
+  const archives = (db.archives||[]);
+  return '<div class="page-head"><div><h1>Archives</h1><div class="sub">Historique en lecture seule des années scolaires précédentes</div></div></div>'+
+  (archives.length===0 ? '<div class="panel"><div class="empty">Aucune année archivée pour le moment. Utilise "Archiver l\'année" depuis le Tableau de bord en fin d\'année scolaire.</div></div>' :
+  archives.slice().reverse().map((a,revIdx)=>{
+    const idx = archives.length-1-revIdx;
+    const isOpen = ui.openArchiveIdx===idx;
+    return '<div class="panel"><div class="panel-head"><h3>Année '+a.year+'</h3><span class="tag gray">Archivée le '+a.archivedAt+'</span></div>'+
+    '<div class="cards-row" style="grid-template-columns:repeat(3,1fr);">'+
+      '<div class="stat-card"><div class="n">'+a.attendance.length+'</div><div class="l">Séances d\'appel</div></div>'+
+      '<div class="stat-card"><div class="n">'+a.evals.length+'</div><div class="l">Évaluations</div></div>'+
+      '<div class="stat-card"><div class="n">'+a.journal.length+'</div><div class="l">Entrées au cahier de texte</div></div>'+
+    '</div>'+
+    '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">'+
+    '<button class="btn-xs" onclick="ui.openArchiveIdx=(ui.openArchiveIdx==='+idx+'?null:'+idx+'); renderMain();">'+(isOpen?'Masquer le détail':'Voir le détail')+'</button>'+
+    '<button class="btn-xs" onclick="exportArchiveExcel('+idx+')">Exporter en Excel</button>'+
+    '<button class="btn-xs" style="color:var(--red);border-color:var(--red);" onclick="restoreArchive('+idx+')">Restaurer cette année (annuler l\'archivage)</button>'+
+    '</div>'+
+    (isOpen ? archiveDetailHTML(a) : '')+
+    '</div>';
+  }).join(''));
+}
+function archiveDetailHTML(a){
+  const d = buildArchiveReportData(a);
+  return '<div style="margin-top:16px;border-top:1px solid var(--line);padding-top:16px;">'+
+    '<h4 style="font-size:14px;margin-bottom:10px;">Cahier de texte ('+d.journalRows.length+' entrées)</h4>'+
+    (d.journalRows.slice(0,12).map(j=>'<div class="entry"><div class="meta">'+j.Date+' · '+j.Classe+' · '+j.Matiere+'</div><h4>'+j.Contenu+'</h4></div>').join('') || '<div class="empty">Aucune entrée.</div>')+
+    (d.journalRows.length>12 ? '<div class="sub">+ '+(d.journalRows.length-12)+' autres entrées — voir l\'export Excel pour le détail complet (notes et absences inclus).</div>' : '')+
+  '</div>';
+}
+function buildArchiveReportData(a){
+  const notesRows = [];
+  a.evals.forEach(ev=>{
+    const cls = db.classes.find(c=>c.id===ev.classId);
+    const sub = db.subjects.find(s=>s.id===ev.subjectId);
+    a.grades.filter(g=>g.evalId===ev.id && g.value!==undefined && g.value!==null).forEach(g=>{
+      const stu = db.students.find(s=>s.id===g.studentId);
+      notesRows.push({ Eleve: stu?stu.name:'(compte supprimé)', Classe: cls?cls.name:'', Matiere: sub?sub.name:'', Evaluation: ev.label, Date: ev.date, Note: g.value });
+    });
+  });
+  const attendanceRows = [];
+  a.attendance.forEach(rec=>{
+    const cls = db.classes.find(c=>c.id===rec.classId);
+    const sub = db.subjects.find(s=>s.id===rec.subjectId);
+    Object.entries(rec.statuses).forEach(([sid,st])=>{
+      if(st==='present') return;
+      const stu = db.students.find(s=>s.id===sid);
+      attendanceRows.push({ Date: rec.date, Classe: cls?cls.name:'', Matiere: sub?sub.name:'', Eleve: stu?stu.name:'', Statut: st==='absent'?'Absent':'Retard', Heures: st==='absent'?(rec.duree||1):'' });
+    });
+  });
+  const journalRows = a.journal.map(j=>{
+    const cls = db.classes.find(c=>c.id===j.classId);
+    const sub = db.subjects.find(s=>s.id===j.subjectId);
+    return { Date: j.date, Classe: cls?cls.name:'', Matiere: sub?sub.name:'', Contenu: j.contenu, Devoirs: j.devoirs||'' };
+  });
+  return { notesRows, attendanceRows, journalRows };
+}
+function exportArchiveExcel(idx){
+  const a = (db.archives||[])[idx];
+  if(!a) return;
+  if(typeof XLSX === 'undefined'){ showToast('La bibliothèque Excel n\'a pas pu se charger — vérifiez la connexion internet'); return; }
+  const d = buildArchiveReportData(a);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.notesRows), 'Notes');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.attendanceRows), 'Absences');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.journalRows), 'Cahier de texte');
+  const safeName = (db.school.name||'ecole').replace(/[^a-zA-Z0-9]+/g,'-');
+  XLSX.writeFile(wb, 'Archive-'+safeName+'-'+a.year.replace(/[^0-9]/g,'')+'.xlsx');
+  showToast('Archive exportée');
 }
 function setPeriodeMode(mode){
   db.school.periodeMode = mode;
@@ -842,6 +971,10 @@ async function removeProf(id){
 
 function comptesEleves(){
   const selCount = ui.selectedStudents.length;
+  if(ui.eleveClassFilter===undefined) ui.eleveClassFilter = '';
+  const visibleClasses = ui.eleveClassFilter ? db.classes.filter(c=>c.id===ui.eleveClassFilter) : db.classes;
+  const visibleIds = visibleClasses.flatMap(c=>db.students.filter(s=>s.classId===c.id).map(s=>s.id));
+  const allVisibleSelected = visibleIds.length>0 && visibleIds.every(id=>ui.selectedStudents.includes(id));
   return '<div class="panel"><div class="panel-head"><h3>Nouvel élève</h3></div>'+
   '<div class="form-grid"><div class="f-group"><label>Nom complet</label><input id="el-name" placeholder="Ex. Kouadio Affoué"></div>'+
   '<div class="f-group"><label>E-mail (connexion)</label><input id="el-email" placeholder="eleve@ecole.ci"></div>'+
@@ -854,22 +987,31 @@ function comptesEleves(){
     '<button class="btn-sm" onclick="promoteSelectedStudents()">Faire passer en classe supérieure</button>'+
     '<button class="btn-sm ghost" onclick="ui.selectedStudents=[];renderMain();">Annuler la sélection</button>'+
     '</div>' : '')+
-  '<div class="panel"><table><thead><tr><th><input type="checkbox" onchange="toggleSelectAllStudents(this.checked)" '+(selCount>0 && selCount===db.students.length?'checked':'')+'></th><th>Élève</th><th>Classe</th><th>Parent lié</th><th></th></tr></thead><tbody>'+
-  (db.students.map(s=>{
-    const par = db.parents.find(p=>p.studentIds.includes(s.id));
-    if(ui.editStudent===s.id){
-      return '<tr><td colspan="5"><div class="form-grid">'+
-        '<div class="f-group"><label>Nom</label><input id="es-name" value="'+s.name+'"></div>'+
-        '<div class="f-group"><label>E-mail</label><input id="es-email" value="'+(s.email||'')+'"></div>'+
-        '<div class="f-group"><label>Classe</label><select id="es-class">'+db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===s.classId?'selected':'')+'>'+c.name+'</option>').join('')+'</select></div>'+
-        pwFieldHTML('es-password')+'</div>'+
-        '<div style="font-size:12px;color:var(--gray);margin-top:-6px;margin-bottom:6px;">Laisser le mot de passe vide pour ne pas le changer.</div>'+
-        '<div style="display:flex;gap:8px;"><button class="btn-sm" onclick="saveStudent(\''+s.id+'\')">Enregistrer</button><button class="btn-sm ghost" onclick="ui.editStudent=null;renderMain();">Annuler</button></div>'+
-        '</td></tr>';
-    }
-    const cls = db.classes.find(c=>c.id===s.classId);
-    return '<tr><td><input type="checkbox" class="stu-check" '+(ui.selectedStudents.includes(s.id)?'checked':'')+' onchange="toggleStudentSelect(\''+s.id+'\')"></td><td><b>'+s.name+'</b></td><td>'+(cls?cls.name:'—')+'</td><td>'+(par?par.name:'<span style="color:var(--gray)">non lié</span>')+'</td>'+
-    '<td><button class="edit-btn" onclick="ui.editStudent=\''+s.id+'\';renderMain();">Modifier</button><button class="del-btn" onclick="removeStudent(\''+s.id+'\')">Supprimer</button></td></tr>';
+  '<div class="selector-row"><select onchange="ui.eleveClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes ('+db.students.length+' élèves)</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.eleveClassFilter?'selected':'')+'>'+c.name+' ('+db.students.filter(s=>s.classId===c.id).length+')</option>').join('')+
+  '</select></div>'+
+  '<div class="panel"><table><thead><tr><th><input type="checkbox" onchange="toggleSelectAllStudents(this.checked)" '+(allVisibleSelected?'checked':'')+'></th><th>Élève</th><th>Classe</th><th>Parent lié</th><th></th></tr></thead><tbody>'+
+  (visibleClasses.map(c=>{
+    const classStudents = db.students.filter(s=>s.classId===c.id);
+    if(!classStudents.length) return '';
+    const header = '<tr><td colspan="5" style="background:var(--paper-alt);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--gray);padding:8px 10px;border-bottom:1px solid var(--line);">'+c.name+' — '+classStudents.length+' élève'+(classStudents.length>1?'s':'')+'</td></tr>';
+    const rows = classStudents.map(s=>{
+      const par = db.parents.find(p=>p.studentIds.includes(s.id));
+      if(ui.editStudent===s.id){
+        return '<tr><td colspan="5"><div class="form-grid">'+
+          '<div class="f-group"><label>Nom</label><input id="es-name" value="'+s.name+'"></div>'+
+          '<div class="f-group"><label>E-mail</label><input id="es-email" value="'+(s.email||'')+'"></div>'+
+          '<div class="f-group"><label>Classe</label><select id="es-class">'+db.classes.map(cc=>'<option value="'+cc.id+'" '+(cc.id===s.classId?'selected':'')+'>'+cc.name+'</option>').join('')+'</select></div>'+
+          pwFieldHTML('es-password')+'</div>'+
+          '<div style="font-size:12px;color:var(--gray);margin-top:-6px;margin-bottom:6px;">Laisser le mot de passe vide pour ne pas le changer.</div>'+
+          '<div style="display:flex;gap:8px;"><button class="btn-sm" onclick="saveStudent(\''+s.id+'\')">Enregistrer</button><button class="btn-sm ghost" onclick="ui.editStudent=null;renderMain();">Annuler</button></div>'+
+          '</td></tr>';
+      }
+      return '<tr><td><input type="checkbox" class="stu-check" '+(ui.selectedStudents.includes(s.id)?'checked':'')+' onchange="toggleStudentSelect(\''+s.id+'\')"></td><td><b>'+s.name+'</b></td><td>'+c.name+'</td><td>'+(par?par.name:'<span style="color:var(--gray)">non lié</span>')+'</td>'+
+      '<td><button class="edit-btn" onclick="ui.editStudent=\''+s.id+'\';renderMain();">Modifier</button><button class="del-btn" onclick="removeStudent(\''+s.id+'\')">Supprimer</button></td></tr>';
+    }).join('');
+    return header + rows;
   }).join('') || '<tr><td colspan="5" class="empty">Aucun élève.</td></tr>')+
   '</tbody></table></div>';
 }
@@ -911,7 +1053,10 @@ function toggleStudentSelect(id){
   renderMain();
 }
 function toggleSelectAllStudents(checked){
-  ui.selectedStudents = checked ? db.students.map(s=>s.id) : [];
+  const visibleClasses = ui.eleveClassFilter ? db.classes.filter(c=>c.id===ui.eleveClassFilter) : db.classes;
+  const visibleIds = visibleClasses.flatMap(c=>db.students.filter(s=>s.classId===c.id).map(s=>s.id));
+  if(checked){ ui.selectedStudents = Array.from(new Set([...ui.selectedStudents, ...visibleIds])); }
+  else{ ui.selectedStudents = ui.selectedStudents.filter(id=>!visibleIds.includes(id)); }
   renderMain();
 }
 function promoteSelectedStudents(){
