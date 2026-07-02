@@ -645,48 +645,110 @@ function setPeriodeMode(mode){
 }
 
 /* ---------- EXPORT BILAN ANNUEL ---------- */
+function classProfsText(classId){
+  const profsForClass = db.profs.filter(p=>p.classIds.includes(classId));
+  const bySubject = {};
+  profsForClass.forEach(p=>{
+    p.subjectIds.forEach(subId=>{
+      const sub = db.subjects.find(s=>s.id===subId);
+      if(sub){ (bySubject[sub.name] = bySubject[sub.name]||[]).push(p.name); }
+    });
+  });
+  return Object.keys(bySubject).map(subName=>subName+' : '+bySubject[subName].join(', ')).join('  |  ');
+}
+function studentSubjectAverage(studentId, classId, subjectId){
+  const evals = db.evals.filter(e=>e.classId===classId && e.subjectId===subjectId);
+  let sum=0, coefSum=0;
+  evals.forEach(ev=>{
+    const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===studentId);
+    if(g && g.value!==undefined && g.value!==null){ sum += g.value*ev.coef; coefSum += ev.coef; }
+  });
+  return coefSum ? sum/coefSum : null;
+}
+function sanitizeSheetName(name, used){
+  let clean = name.replace(/[:\\\/\?\*\[\]]/g,'').slice(0,28).trim() || 'Classe';
+  let candidate = clean, i=2;
+  while(used.has(candidate)){ candidate = clean.slice(0,25)+' '+i; i++; }
+  used.add(candidate);
+  return candidate;
+}
+
 function buildYearReportData(){
-  const classesRows = db.classes.map(c=>({
-    Classe: c.name, Niveau: c.level, Effectif: db.students.filter(s=>s.classId===c.id).length
-  }));
-  const elevesRows = db.students.map(s=>{
-    const cls = db.classes.find(c=>c.id===s.classId);
-    return { Nom: s.name, Classe: cls?cls.name:'', Email: s.email||'' };
-  });
-  const notesRows = [];
+  // Nombre total de séances enregistrées par classe (toutes matières confondues), pour le taux d'absence
+  const sessionsParClasse = {};
+  db.attendance.forEach(a=>{ sessionsParClasse[a.classId] = (sessionsParClasse[a.classId]||0) + 1; });
+
+  const resumeRows = [];
+  const perClassNotes = [];
+  const notesDetailRows = [];
   const absencesRows = [];
-  db.students.forEach(s=>{
-    const cls = db.classes.find(c=>c.id===s.classId);
-    db.subjects.forEach(sub=>{
-      const evals = db.evals.filter(e=>e.classId===s.classId && e.subjectId===sub.id);
-      let sum=0, coefSum=0;
-      evals.forEach(ev=>{
-        const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===s.id);
-        if(g && g.value!==undefined && g.value!==null){ sum += g.value*ev.coef; coefSum += ev.coef; }
+  const usedSheetNames = new Set();
+
+  db.classes.forEach(c=>{
+    const students = db.students.filter(s=>s.classId===c.id);
+    const profsText = classProfsText(c.id) || '—';
+    let classAverages = [];
+
+    const classRows = students.map(s=>{
+      const row = { Élève: s.name };
+      let subjAvgs = [];
+      db.subjects.forEach(sub=>{
+        const avg = studentSubjectAverage(s.id, c.id, sub.id);
+        row[sub.name] = avg!==null ? avg.toFixed(2) : '—';
+        if(avg!==null) subjAvgs.push(avg);
+        // détail des évaluations individuelles
+        db.evals.filter(e=>e.classId===c.id && e.subjectId===sub.id).forEach(ev=>{
+          const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===s.id);
+          if(g && g.value!==undefined && g.value!==null){
+            notesDetailRows.push({ Niveau: c.level, Classe: c.name, Matière: sub.name, Professeur: profTeaching(c.id,sub.id), Élève: s.name, Évaluation: ev.label, Date: ev.date, Coefficient: ev.coef, Note: g.value });
+          }
+        });
       });
-      if(coefSum) notesRows.push({ Eleve: s.name, Classe: cls?cls.name:'', Matiere: sub.name, Moyenne: (sum/coefSum).toFixed(2) });
+      const moyGen = subjAvgs.length ? (subjAvgs.reduce((a,b)=>a+b,0)/subjAvgs.length) : null;
+      row['Moyenne générale'] = moyGen!==null ? moyGen.toFixed(2) : '—';
+      if(moyGen!==null) classAverages.push(moyGen);
+
+      // absences de cet élève
+      let absents=0, retards=0, heures=0;
+      db.attendance.filter(a=>a.classId===c.id).forEach(a=>{
+        const st = a.statuses[s.id];
+        if(st==='absent'){ absents++; heures += (a.duree||1); }
+        if(st==='retard') retards++;
+      });
+      const totalSeances = sessionsParClasse[c.id] || 0;
+      const taux = totalSeances ? ((absents/totalSeances)*100).toFixed(1) : '0.0';
+      absencesRows.push({ Niveau: c.level, Classe: c.name, Élève: s.name, Absences: absents, Retards: retards, "Heures d'absence": heures, "Taux d'absence (%)": taux });
+
+      return row;
     });
-    let absents=0, retards=0;
-    db.attendance.filter(a=>a.classId===s.classId).forEach(a=>{
-      const st = a.statuses[s.id];
-      if(st==='absent') absents++;
-      if(st==='retard') retards++;
-    });
-    absencesRows.push({ Eleve: s.name, Classe: cls?cls.name:'', Absences: absents, Retards: retards });
+
+    const classMoyenne = classAverages.length ? (classAverages.reduce((a,b)=>a+b,0)/classAverages.length).toFixed(2) : '—';
+    resumeRows.push({ Niveau: c.level, Classe: c.name, Effectif: students.length, Professeurs: profsText, "Moyenne générale de la classe": classMoyenne });
+    perClassNotes.push({ sheetName: sanitizeSheetName(c.name, usedSheetNames), rows: classRows });
   });
+
   const comportementRows = db.behavior.slice().sort((a,b)=>a.date.localeCompare(b.date)).map(b=>{
     const s = db.students.find(x=>x.id===b.studentId);
-    return { Date: b.date, Eleve: s?s.name:'', Type: b.type==='positif'?'Positif':'À signaler', Motif: b.motif, Auteur: b.author, Visa: b.visa?'Oui':'Non' };
+    const cls = s ? db.classes.find(c=>c.id===s.classId) : null;
+    return { Date: b.date, Classe: cls?cls.name:'', Élève: s?s.name:'', Type: b.type==='positif'?'Positif':'À signaler', Motif: b.motif, Auteur: b.author, Visa: b.visa?'Oui':'Non' };
   });
-  return { classesRows, elevesRows, notesRows, absencesRows, comportementRows };
+
+  return { resumeRows, perClassNotes, notesDetailRows, absencesRows, comportementRows };
 }
+function profTeaching(classId, subjectId){
+  const p = db.profs.find(p=>p.classIds.includes(classId) && p.subjectIds.includes(subjectId));
+  return p ? p.name : '—';
+}
+
 function exportYearExcel(){
   if(typeof XLSX === 'undefined'){ showToast('La bibliothèque Excel n\'a pas pu se charger — vérifiez la connexion internet'); return; }
   const d = buildYearReportData();
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.classesRows), 'Classes');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.elevesRows), 'Élèves');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.notesRows), 'Moyennes');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.resumeRows), 'Résumé par classe');
+  d.perClassNotes.forEach(pc=>{
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(pc.rows), pc.sheetName);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.notesDetailRows), 'Notes individuelles');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.absencesRows), 'Absences');
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(d.comportementRows), 'Comportement');
   const safeName = (db.school.name||'ecole').replace(/[^a-zA-Z0-9]+/g,'-');
@@ -696,19 +758,36 @@ function exportYearExcel(){
 function exportYearPDF(){
   const d = buildYearReportData();
   const table = (rows, cols) => rows.length ? (
-    '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:26px;">'+
-    '<thead><tr>'+cols.map(c=>'<th style="background:#1B2A4A;color:#fff;text-align:left;padding:6px 8px;">'+c+'</th>').join('')+'</tr></thead>'+
-    '<tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td style="border-bottom:1px solid #ddd;padding:6px 8px;">'+(r[c]!==undefined?r[c]:'')+'</td>').join('')+'</tr>').join('')+
+    '<table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:18px;">'+
+    '<thead><tr>'+cols.map(c=>'<th style="background:#1B2A4A;color:#fff;text-align:left;padding:5px 7px;">'+c+'</th>').join('')+'</tr></thead>'+
+    '<tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td style="border-bottom:1px solid #ddd;padding:5px 7px;">'+(r[c]!==undefined?r[c]:'')+'</td>').join('')+'</tr>').join('')+
     '</tbody></table>'
   ) : '<p style="color:#888;font-size:12px;">Aucune donnée.</p>';
+
+  // Groupement par niveau pour l'affichage
+  const niveaux = [...new Set(db.classes.map(c=>c.level))];
+  const parNiveauHTML = niveaux.map(niveau=>{
+    const classesDuNiveau = db.classes.filter(c=>c.level===niveau);
+    return '<h2 style="border-bottom:2px solid #C9952C;padding-bottom:4px;">Niveau — '+niveau+'</h2>'+
+    classesDuNiveau.map(c=>{
+      const classNotes = d.perClassNotes[db.classes.findIndex(cc=>cc.id===c.id)];
+      const subjectCols = db.subjects.map(s=>s.name);
+      const absencesDeLaClasse = d.absencesRows.filter(r=>r.Classe===c.name);
+      return '<h3 style="margin-bottom:2px;">'+c.name+'</h3>'+
+      '<p style="font-size:12px;color:#555;margin-top:0;">Professeurs — '+(classProfsText(c.id)||'—')+'</p>'+
+      table(classNotes ? classNotes.rows : [], ['Élève', ...subjectCols, 'Moyenne générale'])+
+      '<p style="font-size:12.5px;font-weight:bold;margin-bottom:6px;">Absences — '+c.name+'</p>'+
+      table(absencesDeLaClasse, ['Élève','Absences','Retards',"Heures d'absence","Taux d'absence (%)"]);
+    }).join('');
+  }).join('');
+
   const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Bilan annuel</title></head>'+
     '<body style="font-family:Arial,sans-serif;padding:28px;color:#1B2A4A;">'+
     '<h1 style="margin-bottom:2px;">'+db.school.name+'</h1>'+
     '<p style="color:#666;margin-top:0;">Bilan de l\'année scolaire '+db.school.year+' — édité le '+todayISO()+'</p>'+
-    '<h2>Classes</h2>'+table(d.classesRows, ['Classe','Niveau','Effectif'])+
-    '<h2>Moyennes par élève et matière</h2>'+table(d.notesRows, ['Eleve','Classe','Matiere','Moyenne'])+
-    '<h2>Absences et retards</h2>'+table(d.absencesRows, ['Eleve','Classe','Absences','Retards'])+
-    '<h2>Suivi du comportement</h2>'+table(d.comportementRows, ['Date','Eleve','Type','Motif','Auteur','Visa'])+
+    '<h2>Résumé par classe</h2>'+table(d.resumeRows, ['Niveau','Classe','Effectif','Professeurs','Moyenne générale de la classe'])+
+    parNiveauHTML+
+    '<h2>Suivi du comportement</h2>'+table(d.comportementRows, ['Date','Classe','Élève','Type','Motif','Auteur','Visa'])+
     '</body></html>';
   const w = window.open('', '_blank');
   if(!w){ showToast('Autorisez les fenêtres pop-up pour générer le PDF'); return; }
