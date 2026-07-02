@@ -234,7 +234,7 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            profClass:null, profSubject:null, parentChild:null, appelDate: todayISO(),
            schedClass:null, presDate: todayISO(), notesAdminClass:null, progClass:null, progSubject:null,
            editProf:null, editStudent:null, editParent:null, comportClass:null,
-           msgScope:'eleves', msgClassId:null, msgRecType:'eleve', msgRecId:null,
+           msgScope:'eleves', msgClassId:null, msgRecType:'eleve', msgRecId:null, msgRecClassFilter:'',
            editSchoolNameId:null, contactSchoolId:null, contactData:null, contactLoading:false,
            editClassId:null, editSubjectId:null, selectedStudents:[] };
 
@@ -258,12 +258,17 @@ async function loadData(){
   if(session.role === 'super'){
     const { data: schools, error: e1 } = await sb.from('schools').select('*').order('name');
     const { data: payments, error: e2 } = await sb.from('payments').select('*').order('pay_date');
+    const { data: dataRows } = await sb.from('school_data').select('school_id, data');
     if(e1 || e2){ showToast('Erreur de chargement des écoles'); db = { schools: [] }; return; }
+    let totalStudents = 0;
+    (dataRows||[]).forEach(row=>{
+      if(row.data && Array.isArray(row.data.students)) totalStudents += row.data.students.length;
+    });
     db = { schools: (schools||[]).map(s => ({
-      id: s.id, name: s.name, contact: s.contact, plan: s.plan,
+      id: s.id, name: s.name, contact: s.contact, plan: s.plan, type: s.type,
       status: s.status, nextDue: s.next_due,
       payments: (payments||[]).filter(p => p.school_id === s.id).map(p => ({date:p.pay_date, amount:Number(p.amount), note:p.note}))
-    })) };
+    })), totalStudents };
     return;
   }
   const { data: school } = await sb.from('schools').select('*').eq('id', session.schoolId).single();
@@ -394,7 +399,7 @@ const TABS = {
   prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
          ['programme','Programme annuel','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
          ['messagerie','Messages','#2E4271'] ],
-  eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['notes','Mes notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
+  eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['absences','Absences','#B23A33'], ['notes','Mes notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
           ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
           ['messagerie','Messages','#2E4271'] ],
   parent:[ ['absences','Absences','#B23A33'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
@@ -988,15 +993,16 @@ function adminPresences(){
     if(!classRecs.length) return '';
     const rows = classRecs.map(r=>{
       const sub = db.subjects.find(s=>s.id===r.subjectId);
+      const dur = r.duree || 1;
       const absents = Object.entries(r.statuses).filter(([sid,st])=>st!=='present');
       if(!absents.length) return '';
-      return '<tr><td><b>'+(sub?sub.name:'')+'</b></td><td>'+absents.map(([sid,st])=>{
+      return '<tr><td><b>'+(sub?sub.name:'')+'</b></td><td class="mono">'+dur+' h</td><td>'+absents.map(([sid,st])=>{
         const stu = db.students.find(s=>s.id===sid);
         return (stu?stu.name:'')+' <span class="tag '+(st==='absent'?'red':'amber')+'">'+(st==='absent'?'Absent':'Retard')+'</span>';
       }).join(', ')+'</td></tr>';
     }).join('');
     if(!rows.trim()) return '';
-    return '<div class="panel"><div class="panel-head"><h3>'+c.name+'</h3></div><table><thead><tr><th>Matière</th><th>Élèves concernés</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    return '<div class="panel"><div class="panel-head"><h3>'+c.name+'</h3></div><table><thead><tr><th>Matière</th><th>Durée</th><th>Élèves concernés</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
   }).join('') || '') ||
   '<div class="panel"><div class="empty">Aucune absence ni retard enregistré pour cette date.</div></div>';
 }
@@ -1146,8 +1152,12 @@ function adminMessagerie(){
       '<option value="eleve" '+(ui.msgRecType==='eleve'?'selected':'')+'>Étudiant</option>'+
       '<option value="parent" '+(ui.msgRecType==='parent'?'selected':'')+'>Parent</option>'+
       '<option value="prof" '+(ui.msgRecType==='prof'?'selected':'')+'>Professeur</option></select></div>'+
+      (ui.msgRecType!=='prof' ? '<div class="f-group"><label>Classe (filtrer)</label><select id="mg-recclass" onchange="ui.msgRecClassFilter=this.value; renderMain();">'+
+        '<option value="">Toutes les classes</option>'+
+        db.classes.map(c=>'<option value="'+c.id+'" '+(ui.msgRecClassFilter===c.id?'selected':'')+'>'+c.name+'</option>').join('')+
+      '</select></div>' : '')+
       '<div class="f-group"><label>Personne</label><select id="mg-recid">'+
-      (ui.msgRecType==='eleve'?db.students:ui.msgRecType==='parent'?db.parents:db.profs).map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('')+
+      messageRecOptions().map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('')+
       '</select></div>' : '')+
   '</div>'+
   '<div class="f-group" style="margin-top:10px;"><label>Sujet</label><input id="mg-subject" placeholder="Ex. Réunion de rentrée"></div>'+
@@ -1156,6 +1166,15 @@ function adminMessagerie(){
   '<div class="panel"><div class="panel-head"><h3>Messages envoyés</h3></div>'+
   (sent.map(m=>'<div class="msg-card"><div class="top"><span>'+m.date+' · '+scopeLabel(m)+'</span><button class="del-btn" onclick="removeMessage(\''+m.id+'\')">Supprimer</button></div><h4>'+m.subject+'</h4><p>'+m.body+'</p></div>').join('') || '<div class="empty">Aucun message envoyé.</div>')+
   '</div>';
+}
+function messageRecOptions(){
+  if(ui.msgRecType==='prof') return db.profs;
+  if(ui.msgRecType==='eleve'){
+    return ui.msgRecClassFilter ? db.students.filter(s=>s.classId===ui.msgRecClassFilter) : db.students;
+  }
+  // parent : filtré par classe si un de ses enfants est dans la classe choisie
+  if(!ui.msgRecClassFilter) return db.parents;
+  return db.parents.filter(p=>p.studentIds.some(sid=>{const s=db.students.find(x=>x.id===sid); return s && s.classId===ui.msgRecClassFilter;}));
 }
 function scopeLabel(m){
   if(m.scope==='parents') return 'Tous les parents';
@@ -1261,6 +1280,7 @@ function profAppel(){
   const students = db.students.filter(s=>s.classId===ui.profClass);
   const rec = db.attendance.find(a=>a.classId===ui.profClass && a.subjectId===ui.profSubject && a.date===ui.appelDate);
   const statuses = rec ? rec.statuses : {};
+  const duree = rec && rec.duree ? rec.duree : 1;
   const d = new Date(ui.appelDate+'T00:00:00');
   const yest = new Date(d); yest.setDate(d.getDate()-1);
   const tom = new Date(d); tom.setDate(d.getDate()+1);
@@ -1272,6 +1292,10 @@ function profAppel(){
     '<button class="btn-xs" onclick="ui.appelDate=\''+tom.toISOString().slice(0,10)+'\'; renderMain();">Lendemain &rarr;</button>'+
     '</div></div>'+
   '<div class="sub" style="margin-bottom:10px;">Vous pouvez faire l\'appel pour une date passée, le jour même, ou anticiper une date future.</div>'+
+  '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">'+
+    '<label style="font-size:13px;font-weight:600;color:var(--gray);">Durée du cours (heures)</label>'+
+    '<input type="number" min="0.5" step="0.5" value="'+duree+'" style="width:80px;padding:7px 9px;border:1.5px solid var(--line);border-radius:7px;" onchange="setAttendanceDuree(this.value)">'+
+  '</div>'+
   '<div class="roll-list">'+
   (students.map(s=>{
     const st = statuses[s.id] || 'present';
@@ -1283,9 +1307,19 @@ function profAppel(){
   }).join('') || '<div class="empty">Aucun élève dans cette classe.</div>')+
   '</div></div>';
 }
-function setAttendance(studentId, status){
+function ensureAttendanceRecord(){
   let rec = db.attendance.find(a=>a.classId===ui.profClass && a.subjectId===ui.profSubject && a.date===ui.appelDate);
-  if(!rec){ rec = {id:uid('att'), classId:ui.profClass, subjectId:ui.profSubject, date:ui.appelDate, statuses:{}}; db.attendance.push(rec); }
+  if(!rec){ rec = {id:uid('att'), classId:ui.profClass, subjectId:ui.profSubject, date:ui.appelDate, statuses:{}, duree:1}; db.attendance.push(rec); }
+  if(!rec.duree) rec.duree = 1;
+  return rec;
+}
+function setAttendanceDuree(value){
+  const rec = ensureAttendanceRecord();
+  rec.duree = Math.max(0.5, Number(value) || 1);
+  saveData(); renderMain();
+}
+function setAttendance(studentId, status){
+  const rec = ensureAttendanceRecord();
   rec.statuses[studentId] = status;
   saveData(); renderMain();
 }
@@ -1296,17 +1330,20 @@ function getPeriodes(){
 }
 function profNotes(){
   const students = db.students.filter(s=>s.classId===ui.profClass);
-  const evals = db.evals.filter(e=>e.classId===ui.profClass && e.subjectId===ui.profSubject);
+  if(!ui.profNotesPeriode) ui.profNotesPeriode = getPeriodes()[0];
+  const evals = db.evals.filter(e=>e.classId===ui.profClass && e.subjectId===ui.profSubject && (e.periode||getPeriodes()[0])===ui.profNotesPeriode);
   return '<div class="panel"><div class="panel-head"><h3>Nouvelle évaluation</h3></div>'+
   '<div class="form-grid"><div class="f-group"><label>Intitulé</label><input id="ev-label" placeholder="Ex. Devoir surveillé 1"></div>'+
   '<div class="f-group"><label>Date</label><input id="ev-date" type="date" value="'+todayISO()+'"></div>'+
   '<div class="f-group"><label>Coefficient</label><input id="ev-coef" type="number" min="1" value="1" style="width:80px;"></div>'+
-  '<div class="f-group"><label>Période</label><select id="ev-periode">'+getPeriodes().map(p=>'<option value="'+p+'">'+p+'</option>').join('')+'</select></div>'+
+  '<div class="f-group"><label>Période</label><select id="ev-periode">'+getPeriodes().map(p=>'<option value="'+p+'" '+(p===ui.profNotesPeriode?'selected':'')+'>'+p+'</option>').join('')+'</select></div>'+
   '<button class="btn-sm" onclick="addEval()">Créer</button></div></div>'+
-  '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Saisie des notes</h3></div>'+
-  (evals.length===0 ? '<div class="empty">Créez une évaluation pour commencer la saisie.</div>' :
+  '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Saisie des notes</h3>'+
+    '<select onchange="ui.profNotesPeriode=this.value; renderMain();">'+getPeriodes().map(p=>'<option value="'+p+'" '+(p===ui.profNotesPeriode?'selected':'')+'>'+p+'</option>').join('')+'</select>'+
+  '</div>'+
+  (evals.length===0 ? '<div class="empty">Aucune évaluation pour '+ui.profNotesPeriode+'. Créez-en une pour commencer la saisie.</div>' :
   '<table><thead><tr><th>Élève</th>'+
-    evals.map(e=>'<th>'+e.label+'<br><span style="font-weight:400;text-transform:none;">'+e.date+' · coef '+e.coef+(e.periode?' · '+e.periode:'')+'</span>'+
+    evals.map(e=>'<th>'+e.label+'<br><span style="font-weight:400;text-transform:none;">'+e.date+' · coef '+e.coef+'</span>'+
       '<button class="del-btn" style="display:block;margin-top:3px;" onclick="removeEval(\''+e.id+'\')">Supprimer</button></th>').join('')+
     '<th>Moyenne</th></tr></thead><tbody>'+
   students.map(s=>{
@@ -1412,20 +1449,23 @@ function removeProgramme(id){ db.programme = db.programme.filter(p=>p.id!==id); 
 
 function profComportement(){
   const prof = profSelf();
-  const myStudents = db.students.filter(s=>prof.classIds.includes(s.classId));
-  const entries = db.behavior.filter(b=>prof.classIds.includes(b.classId)).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  if(!ui.comportClass || !prof.classIds.includes(ui.comportClass)) ui.comportClass = prof.classIds[0] || null;
+  const classStudents = db.students.filter(s=>s.classId===ui.comportClass);
+  const entries = db.behavior.filter(b=>prof.classIds.includes(b.classId) && b.author===prof.name).slice().sort((a,b)=>b.date.localeCompare(a.date));
   return '<div class="panel"><div class="panel-head"><h3>Signaler un comportement</h3></div>'+
-  '<div class="form-grid"><div class="f-group"><label>Élève</label><select id="cp-student">'+myStudents.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')+'</select></div>'+
+  '<div class="form-grid">'+
+  '<div class="f-group"><label>Classe</label><select id="cp-class" onchange="ui.comportClass=this.value; renderMain();">'+prof.classIds.map(cid=>{const c=db.classes.find(x=>x.id===cid); return c?'<option value="'+c.id+'" '+(c.id===ui.comportClass?'selected':'')+'>'+c.name+'</option>':'';}).join('')+'</select></div>'+
+  '<div class="f-group"><label>Élève</label><select id="cp-student">'+classStudents.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')+'</select></div>'+
   '<div class="f-group"><label>Type</label><select id="cp-type"><option value="positif">Positif</option><option value="negatif">À signaler</option></select></div>'+
   '<div class="f-group"><label>Date</label><input id="cp-date" type="date" value="'+todayISO()+'"></div></div>'+
   '<div class="f-group" style="margin-top:10px;"><label>Motif</label><textarea id="cp-motif" rows="2"></textarea></div>'+
   '<button class="btn-sm" style="margin-top:12px;" onclick="addBehavior(\''+prof.name+'\')">Publier — la famille sera informée</button></div>'+
-  '<div class="panel"><table><thead><tr><th>Date</th><th>Élève</th><th>Type</th><th>Motif</th><th>Visa parent</th></tr></thead><tbody>'+
+  '<div class="panel"><div class="panel-head"><h3>Mes signalements</h3></div><table><thead><tr><th>Date</th><th>Élève</th><th>Type</th><th>Motif</th><th>Visa parent</th></tr></thead><tbody>'+
   (entries.map(b=>{
     const stu = db.students.find(s=>s.id===b.studentId);
     return '<tr><td class="mono">'+b.date+'</td><td>'+(stu?stu.name:'')+'</td><td><span class="tag '+(b.type==='positif'?'green':'red')+'">'+(b.type==='positif'?'Positif':'À signaler')+'</span></td><td>'+b.motif+'</td>'+
     '<td>'+(b.visa?'<span class="visa-pill" style="color:var(--green);">✓ Visé</span>':'<span class="visa-pill" style="color:var(--gray);">En attente</span>')+'</td></tr>';
-  }).join('') || '<tr><td colspan="5" class="empty">Aucune entrée.</td></tr>')+
+  }).join('') || '<tr><td colspan="5" class="empty">Vous n\'avez signalé aucun comportement.</td></tr>')+
   '</tbody></table></div>';
 }
 
@@ -1467,6 +1507,7 @@ function renderEleve(){
   const cls = db.classes.find(c=>c.id===stu.classId);
   let body = '';
   if(ui.eleveTab==='emploi') body = eleveEmploi(stu);
+  if(ui.eleveTab==='absences') body = eleveAbsences(stu);
   if(ui.eleveTab==='notes') body = eleveNotes(stu);
   if(ui.eleveTab==='cahier') body = parentCahierBody(stu);
   if(ui.eleveTab==='programme') body = eleveProgramme(stu);
@@ -1586,12 +1627,36 @@ function renderParent(){
 function parentAbsences(child){
   const recs = db.attendance.filter(a=>a.classId===child.classId && a.statuses[child.id] && a.statuses[child.id]!=='present')
     .slice().sort((a,b)=>b.date.localeCompare(a.date));
-  return '<div class="panel"><table><thead><tr><th>Date</th><th>Matière</th><th>Statut</th></tr></thead><tbody>'+
+  const totalHeures = recs.filter(r=>r.statuses[child.id]==='absent').reduce((sum,r)=>sum+(r.duree||1),0);
+  return '<div class="cards-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">'+
+    '<div class="stat-card"><div class="n">'+recs.filter(r=>r.statuses[child.id]==='absent').length+'</div><div class="l">Absences</div></div>'+
+    '<div class="stat-card"><div class="n">'+recs.filter(r=>r.statuses[child.id]==='retard').length+'</div><div class="l">Retards</div></div>'+
+    '<div class="stat-card"><div class="n">'+totalHeures+' h</div><div class="l">Total heures d\'absence</div></div>'+
+  '</div>'+
+  '<div class="panel"><table><thead><tr><th>Date</th><th>Matière</th><th>Statut</th><th>Heures</th></tr></thead><tbody>'+
   (recs.map(r=>{
     const sub = db.subjects.find(s=>s.id===r.subjectId);
     const st = r.statuses[child.id];
-    return '<tr><td>'+r.date+'</td><td>'+(sub?sub.name:'')+'</td><td><span class="tag '+(st==='absent'?'red':'amber')+'">'+(st==='absent'?'Absent':'Retard')+'</span></td></tr>';
-  }).join('') || '<tr><td colspan="3" class="empty">Aucune absence ni retard enregistré.</td></tr>')+
+    return '<tr><td>'+r.date+'</td><td>'+(sub?sub.name:'')+'</td><td><span class="tag '+(st==='absent'?'red':'amber')+'">'+(st==='absent'?'Absent':'Retard')+'</span></td><td class="mono">'+(st==='absent'?(r.duree||1)+' h':'—')+'</td></tr>';
+  }).join('') || '<tr><td colspan="4" class="empty">Aucune absence ni retard enregistré.</td></tr>')+
+  '</tbody></table></div>';
+}
+
+function eleveAbsences(stu){
+  const recs = db.attendance.filter(a=>a.classId===stu.classId && a.statuses[stu.id] && a.statuses[stu.id]!=='present')
+    .slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const totalHeures = recs.filter(r=>r.statuses[stu.id]==='absent').reduce((sum,r)=>sum+(r.duree||1),0);
+  return '<div class="cards-row" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">'+
+    '<div class="stat-card"><div class="n">'+recs.filter(r=>r.statuses[stu.id]==='absent').length+'</div><div class="l">Absences</div></div>'+
+    '<div class="stat-card"><div class="n">'+recs.filter(r=>r.statuses[stu.id]==='retard').length+'</div><div class="l">Retards</div></div>'+
+    '<div class="stat-card"><div class="n">'+totalHeures+' h</div><div class="l">Total heures d\'absence</div></div>'+
+  '</div>'+
+  '<div class="panel"><table><thead><tr><th>Date</th><th>Matière</th><th>Statut</th><th>Heures</th></tr></thead><tbody>'+
+  (recs.map(r=>{
+    const sub = db.subjects.find(s=>s.id===r.subjectId);
+    const st = r.statuses[stu.id];
+    return '<tr><td>'+r.date+'</td><td>'+(sub?sub.name:'')+'</td><td><span class="tag '+(st==='absent'?'red':'amber')+'">'+(st==='absent'?'Absent':'Retard')+'</span></td><td class="mono">'+(st==='absent'?(r.duree||1)+' h':'—')+'</td></tr>';
+  }).join('') || '<tr><td colspan="4" class="empty">Aucune absence ni retard enregistré.</td></tr>')+
   '</tbody></table></div>';
 }
 
@@ -1647,20 +1712,26 @@ function renderSuper(){
   return schoolsAdmin();
 }
 const PLANS = {
-  essai:    { label:'Essai',    price:'Gratuit', desc:'Période de découverte' },
-  starter:  { label:'Starter',  price:'75 000 FCFA/mois · 750 000 FCFA/an',   desc:'Moins de 500 étudiants' },
-  standard: { label:'Standard', price:'150 000 FCFA/mois · 1 500 000 FCFA/an', desc:'500 à 2 000 étudiants' },
-  premium:  { label:'Premium',  price:'300 000 FCFA/mois · 3 000 000 FCFA/an', desc:'Plus de 2 000 étudiants' }
+  essai:    { label:'Essai',    price:'Gratuit', monthly:0, desc:'Période de découverte' },
+  starter:  { label:'Starter',  price:'75 000 FCFA/mois · 750 000 FCFA/an',   monthly:75000, desc:'Moins de 500 étudiants' },
+  standard: { label:'Standard', price:'150 000 FCFA/mois · 1 500 000 FCFA/an', monthly:150000, desc:'500 à 2 000 étudiants' },
+  premium:  { label:'Premium',  price:'300 000 FCFA/mois · 3 000 000 FCFA/an', monthly:300000, desc:'Plus de 2 000 étudiants' }
 };
 function planSelectHTML(id, current){
   return '<select id="'+id+'">'+Object.keys(PLANS).map(k=>'<option value="'+k+'" '+(k===current?'selected':'')+'>'+PLANS[k].label+'</option>').join('')+'</select>';
 }
+
+const ETABLISSEMENT_TYPES = ['Primaire','Collège','Lycée','Institut de formation','Grande école','Université'];
 
 function schoolsAdmin(){
   const schools = db.schools;
   const actifs = schools.filter(s=>s.status==='actif').length;
   const suspendus = schools.filter(s=>s.status==='suspendu').length;
   const essai = schools.filter(s=>s.status==='essai').length;
+  const lycees = schools.filter(s=>s.type==='Lycée').length;
+  const grandesEcoles = schools.filter(s=>s.type==='Grande école').length;
+  const universites = schools.filter(s=>s.type==='Université').length;
+  const totalEleves = db.totalStudents || 0;
   return '<div class="page-head"><div><h1>Écoles partenaires</h1><div class="sub">Gérez les accès, abonnements et contacts de chaque établissement</div></div></div>'+
   '<div class="cards-row">'+
     '<div class="stat-card"><div class="n">'+schools.length+'</div><div class="l">Écoles</div></div>'+
@@ -1668,22 +1739,31 @@ function schoolsAdmin(){
     '<div class="stat-card"><div class="n" style="color:var(--gold-dark);">'+essai+'</div><div class="l">À l\'essai</div></div>'+
     '<div class="stat-card"><div class="n" style="color:var(--red);">'+suspendus+'</div><div class="l">Accès suspendu</div></div>'+
   '</div>'+
+  '<div class="cards-row">'+
+    '<div class="stat-card"><div class="n">'+lycees+'</div><div class="l">Lycées</div></div>'+
+    '<div class="stat-card"><div class="n">'+grandesEcoles+'</div><div class="l">Grandes écoles</div></div>'+
+    '<div class="stat-card"><div class="n">'+universites+'</div><div class="l">Universités</div></div>'+
+    '<div class="stat-card"><div class="n">'+totalEleves.toLocaleString('fr-FR')+'</div><div class="l">Élèves &amp; étudiants sur la plateforme</div></div>'+
+  '</div>'+
   '<div class="panel"><div class="panel-head"><h3>Ajouter une école</h3></div>'+
   '<div class="form-grid">'+
     '<div class="f-group"><label>Nom de l\'école</label><input id="sch-name" placeholder="Ex. Collège Sainte-Marie"></div>'+
     '<div class="f-group"><label>Contact</label><input id="sch-contact" placeholder="email@ecole.ci"></div>'+
+    '<div class="f-group"><label>Type d\'établissement</label><select id="sch-type">'+ETABLISSEMENT_TYPES.map(t=>'<option value="'+t+'">'+t+'</option>').join('')+'</select></div>'+
     '<div class="f-group"><label>Formule</label>'+planSelectHTML('sch-plan','essai')+'</div>'+
     '<div class="f-group"><label>Prochaine échéance</label><input id="sch-due" type="date" value="'+todayISO()+'"></div>'+
     '<button class="btn-sm" onclick="addSchoolTenant()">Ajouter</button>'+
   '</div></div>'+
-  '<div class="panel"><table><thead><tr><th>École</th><th>Formule</th><th>Statut</th><th>Prochaine échéance</th><th>Dernier paiement</th><th></th></tr></thead><tbody>'+
+  '<div class="panel"><table><thead><tr><th>École</th><th>Type</th><th>Formule</th><th>Statut</th><th>Prochaine échéance</th><th>Dernier paiement</th><th></th></tr></thead><tbody>'+
   (schools.map(s=>{
     const lastPay = s.payments.length ? s.payments[s.payments.length-1] : null;
     const plan = PLANS[s.plan] ? s.plan : 'essai';
+    const type = s.type || 'Établissement';
     const nameRow = ui.editSchoolNameId===s.id
       ? '<div style="display:flex;gap:6px;"><input id="sn-name" value="'+s.name+'" style="padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;"><button class="btn-xs" onclick="saveSchoolName(\''+s.id+'\')">OK</button><button class="btn-xs" onclick="ui.editSchoolNameId=null;renderMain();">✕</button></div>'
       : '<b>'+s.name+'</b> <button class="edit-btn" onclick="ui.editSchoolNameId=\''+s.id+'\';renderMain();">Modifier</button>';
     const rows = '<tr><td>'+nameRow+'<br><span style="color:var(--gray);font-size:12px;">'+s.contact+'</span></td>'+
+      '<td><select onchange="updateSchoolType(\''+s.id+'\',this.value)">'+ETABLISSEMENT_TYPES.map(t=>'<option value="'+t+'" '+(t===type?'selected':'')+'>'+t+'</option>').join('')+'</select></td>'+
       '<td>'+planSelectHTML('plan-'+s.id, plan)+'<div style="font-size:11px;color:var(--gray);margin-top:4px;">'+PLANS[plan].price+'</div>'+
         '<button class="btn-xs" style="margin-top:5px;" onclick="updateSchoolPlan(\''+s.id+'\')">Appliquer</button></td>'+
       '<td><span class="tag '+(s.status==='actif'?'green':s.status==='essai'?'amber':'red')+'">'+statusLabelSchool(s.status)+'</span></td>'+
@@ -1698,8 +1778,8 @@ function schoolsAdmin(){
         '<button class="btn-xs" onclick="openContactPanel(\''+s.id+'\')">Contact admin</button>'+
         '<button class="btn-xs" style="color:var(--red);border-color:var(--red);" onclick="confirmDeleteSchool(\''+s.id+'\',\''+s.name.replace(/'/g,"\\'")+'\')">Supprimer</button>'+
       '</td></tr>';
-    const payForm = ui.paySchoolId===s.id ? '<tr><td colspan="6"><div class="form-grid">'+
-      '<div class="f-group"><label>Montant (F CFA)</label><input id="pay-amount" type="number" placeholder="150000"></div>'+
+    const payForm = ui.paySchoolId===s.id ? '<tr><td colspan="7"><div class="form-grid">'+
+      '<div class="f-group"><label>Montant (F CFA)</label><input id="pay-amount" type="number" value="'+(PLANS[plan].monthly||'')+'" placeholder="150000"></div>'+
       '<div class="f-group"><label>Date</label><input id="pay-date" type="date" value="'+todayISO()+'"></div>'+
       '<div class="f-group"><label>Note</label><input id="pay-note" placeholder="Ex. Trimestre 2"></div>'+
       '<div class="f-group"><label>Nouvelle échéance</label><input id="pay-due" type="date" value="'+s.nextDue+'"></div>'+
@@ -1709,16 +1789,21 @@ function schoolsAdmin(){
         s.payments.slice().reverse().map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td><td>'+(p.note||'—')+'</td></tr>').join('')+
         '</tbody></table></div>' : '')+
       '</td></tr>' : '';
-    const adminForm = ui.adminSchoolId===s.id ? '<tr><td colspan="6"><div class="form-grid">'+
+    const adminForm = ui.adminSchoolId===s.id ? '<tr><td colspan="7"><div class="form-grid">'+
       '<div class="f-group"><label>Nom du responsable</label><input id="sa-name" placeholder="Ex. M. le Directeur"></div>'+
       '<div class="f-group"><label>E-mail (connexion)</label><input id="sa-email" placeholder="admin@ecole.ci"></div>'+
       pwFieldHTML('sa-password')+
       '<button class="btn-sm" onclick="createSchoolAdmin(\''+s.id+'\')">Créer le compte administration</button>'+
       '</div></td></tr>' : '';
-    const contactForm = ui.contactSchoolId===s.id ? '<tr><td colspan="6">'+contactPanelHTML(s.id)+'</td></tr>' : '';
+    const contactForm = ui.contactSchoolId===s.id ? '<tr><td colspan="7">'+contactPanelHTML(s.id)+'</td></tr>' : '';
     return rows + payForm + adminForm + contactForm;
-  }).join('') || '<tr><td colspan="6" class="empty">Aucune école enregistrée.</td></tr>')+
+  }).join('') || '<tr><td colspan="7" class="empty">Aucune école enregistrée.</td></tr>')+
   '</tbody></table></div>';
+}
+async function updateSchoolType(schoolId, type){
+  const { error } = await sb.from('schools').update({ type }).eq('id', schoolId);
+  if(error){ showToast('Erreur : '+error.message); return; }
+  await loadData(); renderMain();
 }
 function contactPanelHTML(schoolId){
   if(ui.contactLoading) return '<div class="empty">Chargement du contact...</div>';
@@ -1814,10 +1899,11 @@ async function createSchoolAdmin(schoolId){
 async function addSchoolTenant(){
   const name = document.getElementById('sch-name').value.trim();
   const contact = document.getElementById('sch-contact').value.trim();
+  const type = document.getElementById('sch-type').value;
   const plan = document.getElementById('sch-plan').value;
   const nextDue = document.getElementById('sch-due').value || todayISO();
   if(!name) return showToast('Indiquez un nom d\'école');
-  const { error } = await sb.from('schools').insert({ name, contact, plan, status:'essai', next_due: nextDue });
+  const { error } = await sb.from('schools').insert({ name, contact, type, plan, status:'essai', next_due: nextDue });
   if(error){ showToast('Erreur : '+error.message); return; }
   showToast('École ajoutée — accès en période d\'essai');
   await loadData(); renderMain();
