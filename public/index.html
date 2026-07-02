@@ -216,6 +216,8 @@ tr:last-child td{border-bottom:none;}
 <!-- Client Supabase -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
 <script>
 /* ============================================================
    CONFIGURATION SUPABASE — à renseigner après création du projet
@@ -756,45 +758,111 @@ function exportYearExcel(){
   showToast('Export Excel généré');
 }
 function exportYearPDF(){
+  if(typeof window.jspdf === 'undefined'){ showToast('La bibliothèque PDF n\'a pas pu se charger — vérifiez la connexion internet'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
   const d = buildYearReportData();
-  const table = (rows, cols) => rows.length ? (
-    '<table style="width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:18px;">'+
-    '<thead><tr>'+cols.map(c=>'<th style="background:#1B2A4A;color:#fff;text-align:left;padding:5px 7px;">'+c+'</th>').join('')+'</tr></thead>'+
-    '<tbody>'+rows.map(r=>'<tr>'+cols.map(c=>'<td style="border-bottom:1px solid #ddd;padding:5px 7px;">'+(r[c]!==undefined?r[c]:'')+'</td>').join('')+'</tr>').join('')+
-    '</tbody></table>'
-  ) : '<p style="color:#888;font-size:12px;">Aucune donnée.</p>';
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginLeft = 40, marginRight = 40;
+  let y = 50;
 
-  // Groupement par niveau pour l'affichage
+  function ensureSpace(needed){
+    if(y + needed > pageHeight - 40){ doc.addPage(); y = 50; }
+  }
+
+  // En-tête
+  doc.setFont('helvetica','bold'); doc.setFontSize(20); doc.setTextColor(27,42,74);
+  doc.text(db.school.name || 'École', marginLeft, y); y += 20;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(107,107,99);
+  doc.text('Bilan de l\'année scolaire '+(db.school.year||'')+' — édité le '+todayISO(), marginLeft, y); y += 26;
+
+  // Chiffres clés
+  doc.autoTable({
+    startY: y,
+    head: [['Classes','Professeurs','Élèves','Comptes parents']],
+    body: [[ String(db.classes.length), String(db.profs.length), String(db.students.length), String(db.parents.length) ]],
+    theme:'grid', styles:{fontSize:10, halign:'center'}, headStyles:{fillColor:[27,42,74]},
+    margin:{left:marginLeft, right:marginRight}
+  });
+  y = doc.lastAutoTable.finalY + 26;
+
+  // Résumé par classe
+  ensureSpace(60);
+  doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(27,42,74);
+  doc.text('Résumé par classe', marginLeft, y); y += 8;
+  doc.autoTable({
+    startY: y,
+    head: [['Niveau','Classe','Effectif','Professeurs','Moyenne classe']],
+    body: d.resumeRows.map(r=>[r.Niveau, r.Classe, String(r.Effectif), r.Professeurs, r['Moyenne générale de la classe']]),
+    styles:{fontSize:8}, headStyles:{fillColor:[27,42,74]}, columnStyles:{3:{cellWidth:200}},
+    margin:{left:marginLeft, right:marginRight}
+  });
+  y = doc.lastAutoTable.finalY + 28;
+
+  // Par niveau puis par classe : notes + absences
   const niveaux = [...new Set(db.classes.map(c=>c.level))];
-  const parNiveauHTML = niveaux.map(niveau=>{
-    const classesDuNiveau = db.classes.filter(c=>c.level===niveau);
-    return '<h2 style="border-bottom:2px solid #C9952C;padding-bottom:4px;">Niveau — '+niveau+'</h2>'+
-    classesDuNiveau.map(c=>{
+  niveaux.forEach(niveau=>{
+    ensureSpace(40);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(201,149,44);
+    doc.text('Niveau — '+niveau, marginLeft, y); y += 16;
+
+    db.classes.filter(c=>c.level===niveau).forEach(c=>{
+      ensureSpace(60);
+      doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(27,42,74);
+      doc.text(c.name, marginLeft, y); y += 12;
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(90,90,90);
+      const profsLine = doc.splitTextToSize('Professeurs : '+(classProfsText(c.id)||'—'), pageWidth-marginLeft-marginRight);
+      doc.text(profsLine, marginLeft, y); y += profsLine.length*10 + 6;
+
       const classNotes = d.perClassNotes[db.classes.findIndex(cc=>cc.id===c.id)];
       const subjectCols = db.subjects.map(s=>s.name);
-      const absencesDeLaClasse = d.absencesRows.filter(r=>r.Classe===c.name);
-      return '<h3 style="margin-bottom:2px;">'+c.name+'</h3>'+
-      '<p style="font-size:12px;color:#555;margin-top:0;">Professeurs — '+(classProfsText(c.id)||'—')+'</p>'+
-      table(classNotes ? classNotes.rows : [], ['Élève', ...subjectCols, 'Moyenne générale'])+
-      '<p style="font-size:12.5px;font-weight:bold;margin-bottom:6px;">Absences — '+c.name+'</p>'+
-      table(absencesDeLaClasse, ['Élève','Absences','Retards',"Heures d'absence","Taux d'absence (%)"]);
-    }).join('');
-  }).join('');
+      ensureSpace(50);
+      doc.autoTable({
+        startY: y,
+        head: [['Élève', ...subjectCols, 'Moyenne']],
+        body: (classNotes?classNotes.rows:[]).map(r=>[r['Élève'], ...subjectCols.map(sc=>r[sc]), r['Moyenne générale']]),
+        styles:{fontSize:7.5}, headStyles:{fillColor:[46,66,113]},
+        margin:{left:marginLeft, right:marginRight}
+      });
+      y = doc.lastAutoTable.finalY + 10;
 
-  const html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Bilan annuel</title></head>'+
-    '<body style="font-family:Arial,sans-serif;padding:28px;color:#1B2A4A;">'+
-    '<h1 style="margin-bottom:2px;">'+db.school.name+'</h1>'+
-    '<p style="color:#666;margin-top:0;">Bilan de l\'année scolaire '+db.school.year+' — édité le '+todayISO()+'</p>'+
-    '<h2>Résumé par classe</h2>'+table(d.resumeRows, ['Niveau','Classe','Effectif','Professeurs','Moyenne générale de la classe'])+
-    parNiveauHTML+
-    '<h2>Suivi du comportement</h2>'+table(d.comportementRows, ['Date','Classe','Élève','Type','Motif','Auteur','Visa'])+
-    '</body></html>';
-  const w = window.open('', '_blank');
-  if(!w){ showToast('Autorisez les fenêtres pop-up pour générer le PDF'); return; }
-  w.document.write(html);
-  w.document.close();
-  w.focus();
-  setTimeout(()=>{ w.print(); }, 350);
+      const absencesDeLaClasse = d.absencesRows.filter(r=>r.Classe===c.name);
+      ensureSpace(50);
+      doc.autoTable({
+        startY: y,
+        head: [['Élève','Absences','Retards',"Heures d'absence","Taux (%)"]],
+        body: absencesDeLaClasse.map(r=>[r['Élève'], String(r.Absences), String(r.Retards), String(r["Heures d'absence"]), String(r["Taux d'absence (%)"])]),
+        styles:{fontSize:7.5}, headStyles:{fillColor:[178,58,51]},
+        margin:{left:marginLeft, right:marginRight}
+      });
+      y = doc.lastAutoTable.finalY + 24;
+    });
+  });
+
+  // Comportement
+  ensureSpace(60);
+  doc.setFont('helvetica','bold'); doc.setFontSize(14); doc.setTextColor(27,42,74);
+  doc.text('Suivi du comportement', marginLeft, y); y += 8;
+  doc.autoTable({
+    startY: y,
+    head: [['Date','Classe','Élève','Type','Motif','Auteur','Visa']],
+    body: d.comportementRows.length ? d.comportementRows.map(r=>[r.Date, r.Classe, r['Élève'], r.Type, r.Motif, r.Auteur, r.Visa]) : [['—','—','Aucune entrée','—','—','—','—']],
+    styles:{fontSize:7.5}, headStyles:{fillColor:[27,42,74]},
+    margin:{left:marginLeft, right:marginRight}
+  });
+
+  // Pied de page (numéros de page)
+  const pageCount = doc.internal.getNumberOfPages();
+  for(let i=1;i<=pageCount;i++){
+    doc.setPage(i);
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(150,150,150);
+    doc.text('Kampusya — '+(db.school.name||'')+' — Page '+i+'/'+pageCount, marginLeft, pageHeight-20);
+  }
+
+  const safeName = (db.school.name||'ecole').replace(/[^a-zA-Z0-9]+/g,'-');
+  doc.save('Bilan-annuel-'+safeName+'-'+(db.school.year||'').replace(/[^0-9]/g,'')+'.pdf');
+  showToast('PDF téléchargé');
 }
 
 function adminClasses(){
