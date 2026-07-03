@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Kampusya — Plateforme scolaire</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1B2A4A">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Kampusya">
+<link rel="icon" href="icons/icon-192.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
@@ -174,6 +181,7 @@ tr:last-child td{border-bottom:none;}
       <input class="select-acct" id="login-password" type="password" placeholder="••••••••" autocomplete="current-password">
       <button class="btn-primary" onclick="doLogin()" id="login-btn">Entrer</button>
       <div class="login-hint">Mot de passe oublié ? Contactez l'administration de votre établissement.</div>
+      <button class="logout-btn" onclick="installApp()" id="install-btn-login" style="display:none;margin-top:14px;border-color:var(--gold);color:var(--gold-dark);">📲 Installer l'application</button>
     </div>
   </div>
 </div>
@@ -187,6 +195,7 @@ tr:last-child td{border-bottom:none;}
       <div class="sidebar-footer">
         <div class="who"><b id="who-name">—</b><span id="who-role"></span></div>
         <button class="logout-btn" onclick="openPwModal()" style="margin-bottom:8px;">Changer mon mot de passe</button>
+        <button class="logout-btn" onclick="installApp()" id="install-btn-app" style="display:none;margin-bottom:8px;border-color:var(--gold);color:var(--gold);">📲 Installer l'application</button>
         <button class="logout-btn" onclick="logout()">Se déconnecter</button>
       </div>
     </div>
@@ -2218,6 +2227,42 @@ async function recordPayment(id){
   ui.paySchoolId = null;
   showToast('Paiement enregistré — accès actif');
   await loadData(); renderMain();
+}
+
+/* ============================================================
+   PWA — installation et service worker
+   ============================================================ */
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  const b1 = document.getElementById('install-btn-login');
+  const b2 = document.getElementById('install-btn-app');
+  if(b1) b1.style.display = 'block';
+  if(b2) b2.style.display = 'block';
+});
+async function installApp(){
+  if(deferredInstallPrompt){
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    const b1 = document.getElementById('install-btn-login');
+    const b2 = document.getElementById('install-btn-app');
+    if(b1) b1.style.display = 'none';
+    if(b2) b2.style.display = 'none';
+  }else{
+    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    if(isIOS){
+      alert('Pour installer Kampusya sur iPhone/iPad :\n\n1. Appuyez sur le bouton Partager (le carré avec une flèche vers le haut)\n2. Choisissez "Sur l\'écran d\'accueil"\n3. Confirmez');
+    }else{
+      alert('Pour installer Kampusya :\n\nOuvrez le menu de votre navigateur (souvent en haut à droite, icône ⋮) puis choisissez "Installer l\'application" ou "Ajouter à l\'écran d\'accueil".');
+    }
+  }
+}
+if('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
 }
 
 /* ============================================================
