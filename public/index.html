@@ -236,6 +236,7 @@ tr:last-child td{border-bottom:none;}
 
 <div id="app">
   <div class="mobile-account-menu" id="mobile-account-menu">
+    <button onclick="closeMobileAccountMenu(); subscribeToPush();" id="push-btn-mobile">🔔 Activer les notifications</button>
     <button onclick="closeMobileAccountMenu(); openPwModal();">Changer mon mot de passe</button>
     <button onclick="closeMobileAccountMenu(); logout();">Se déconnecter</button>
   </div>
@@ -252,6 +253,7 @@ tr:last-child td{border-bottom:none;}
       <button class="notif-bell-btn notif-bell-desktop" onclick="toggleNotifPanel()" id="notif-bell-desktop" aria-label="Notifications">🔔 Notifications<span class="notif-badge" id="notif-badge-desktop"></span></button>
       <div class="sidebar-footer">
         <div class="who"><b id="who-name">—</b><span id="who-role"></span></div>
+        <button class="logout-btn" onclick="subscribeToPush()" id="push-btn-app" style="margin-bottom:8px;">🔔 Activer les notifications</button>
         <button class="logout-btn" onclick="openPwModal()" style="margin-bottom:8px;">Changer mon mot de passe</button>
         <button class="logout-btn" onclick="installApp()" id="install-btn-app" style="display:none;margin-bottom:8px;border-color:var(--gold);color:var(--gold);">📲 Installer l'application</button>
         <button class="logout-btn" onclick="logout()">Se déconnecter</button>
@@ -484,7 +486,7 @@ async function afterLogin(){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app').style.display='block';
   renderShell();
-  if(session.role !== 'super') subscribeToPush();
+  updatePushButtonState();
 }
 
 /* ============================================================
@@ -497,11 +499,26 @@ function urlBase64ToUint8Array(base64String){
   const rawData = window.atob(base64);
   return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
 }
+// Doit impérativement être déclenché par un clic direct de la personne —
+// les navigateurs (surtout Safari/iPhone) ignorent silencieusement la
+// demande d'autorisation si elle n'est pas liée à un geste utilisateur immédiat.
 async function subscribeToPush(){
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  if(isIOS && !isStandalone){
+    showToast("Sur iPhone/iPad, installe d'abord l'application (bouton \"Installer l'application\") avant d'activer les notifications.");
+    return;
+  }
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)){
+    showToast('Les notifications ne sont pas prises en charge par ce navigateur.');
+    return;
+  }
   try{
-    if(!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     const permission = await Notification.requestPermission();
-    if(permission !== 'granted') return;
+    if(permission !== 'granted'){
+      showToast('Autorisation refusée — active les notifications dans les réglages de ton navigateur si tu changes d\'avis.');
+      return;
+    }
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if(!sub){
@@ -510,8 +527,26 @@ async function subscribeToPush(){
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
       });
     }
-    await sb.from('profiles').update({ push_subscription: sub.toJSON() }).eq('id', session.acctId);
-  }catch(e){ console.error('Abonnement push impossible', e); }
+    const { error } = await sb.from('profiles').update({ push_subscription: sub.toJSON() }).eq('id', session.acctId);
+    if(error){ showToast('Erreur lors de l\'activation : '+error.message); return; }
+    showToast('Notifications activées ✅');
+    updatePushButtonState();
+  }catch(e){
+    console.error('Abonnement push impossible', e);
+    showToast('Impossible d\'activer les notifications sur cet appareil.');
+  }
+}
+async function updatePushButtonState(){
+  const btns = [document.getElementById('push-btn-app'), document.getElementById('push-btn-mobile')];
+  let active = false;
+  try{
+    if('serviceWorker' in navigator && 'PushManager' in window){
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      active = !!sub;
+    }
+  }catch(e){}
+  btns.forEach(b=>{ if(b) b.textContent = active ? '🔔 Notifications activées' : '🔔 Activer les notifications'; });
 }
 // Envoie une vraie notification (écran verrouillé) aux comptes concernés,
 // en plus de la notification déjà enregistrée dans l'app.
@@ -606,12 +641,18 @@ function renderShell(){
   }).join('');
   const bellD = document.getElementById('notif-bell-desktop');
   const bellM = document.getElementById('notif-bell-mobile');
+  const pushD = document.getElementById('push-btn-app');
+  const pushM = document.getElementById('push-btn-mobile');
   if(session.role==='super'){
     if(bellD) bellD.style.display='none';
     if(bellM) bellM.style.display='none';
+    if(pushD) pushD.style.display='none';
+    if(pushM) pushM.style.display='none';
   }else{
     if(bellD) bellD.style.display='';
+    if(pushD) pushD.style.display='';
     renderNotifBadges();
+    updatePushButtonState();
   }
   renderMain();
 }
