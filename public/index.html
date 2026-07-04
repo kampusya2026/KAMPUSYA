@@ -491,7 +491,7 @@ function renderShell(){
 }
 function roleLabel(){
   if(session.role==='admin') return 'Administration';
-  if(session.role==='prof') return 'Professeur';
+  if(session.role==='prof') return teacherTitle(profSelf(), true);
   if(session.role==='eleve') return learnerLabel(true, false);
   if(session.role==='super') return 'Super Administrateur';
   return "Parent d'"+learnerLabel(false, false);
@@ -549,7 +549,7 @@ function adminOverview(){
   return '<div class="page-head"><div><h1>Tableau de bord</h1><div class="sub">'+db.school.name+' — Année '+db.school.year+'</div></div></div>'+
   '<div class="cards-row">'+
     '<div class="stat-card"><div class="n">'+db.classes.length+'</div><div class="l">Classes</div></div>'+
-    '<div class="stat-card"><div class="n">'+db.profs.length+'</div><div class="l">Professeurs</div></div>'+
+    '<div class="stat-card"><div class="n">'+db.profs.length+'</div><div class="l">'+teacherGenericLabel(true)+'s</div></div>'+
     '<div class="stat-card"><div class="n">'+db.students.length+'</div><div class="l">'+learnerLabel(true,true)+'</div></div>'+
     '<div class="stat-card"><div class="n">'+db.parents.length+'</div><div class="l">Comptes parents</div></div>'+
   '</div>'+
@@ -1036,7 +1036,7 @@ function removeSlot(id){ db.schedule = db.schedule.filter(s=>s.id!==id); saveDat
 function adminComptes(){
   return '<div class="page-head"><div><h1>Comptes</h1><div class="sub">Créez et modifiez les comptes professeurs, '+learnerLabel(false,true)+' et parents</div></div></div>'+
   '<div class="subtabs">'+
-    '<button class="subtab '+(ui.adminAcctTab==='profs'?'active':'')+'" onclick="setAcctTab(\'profs\')">Professeurs ('+db.profs.length+')</button>'+
+    '<button class="subtab '+(ui.adminAcctTab==='profs'?'active':'')+'" onclick="setAcctTab(\'profs\')">'+teacherGenericLabel(true)+'s ('+db.profs.length+')</button>'+
     '<button class="subtab '+(ui.adminAcctTab==='eleves'?'active':'')+'" onclick="setAcctTab(\'eleves\')">'+learnerLabel(true,true)+' ('+db.students.length+')</button>'+
     '<button class="subtab '+(ui.adminAcctTab==='parents'?'active':'')+'" onclick="setAcctTab(\'parents\')">Parents ('+db.parents.length+')</button>'+
   '</div>'+
@@ -1109,8 +1109,11 @@ async function deleteAuthAccount(userId){
 }
 
 function comptesProfs(){
-  return '<div class="panel"><div class="panel-head"><h3>Nouveau compte professeur</h3></div>'+
-  '<div class="form-grid"><div class="f-group"><label>Nom complet</label><input id="pf-name" placeholder="Ex. Mme Aya N\'Guessan"></div>'+
+  if(ui.profClassFilter===undefined) ui.profClassFilter = '';
+  const visibleProfs = ui.profClassFilter ? db.profs.filter(p=>p.classIds.includes(ui.profClassFilter)) : db.profs;
+  return '<div class="panel"><div class="panel-head"><h3>Nouveau compte '+teacherGenericLabel(false)+'</h3></div>'+
+  '<div class="form-grid"><div class="f-group"><label>Civilité</label><select id="pf-civilite"><option value="M">M.</option><option value="Mme">Mme</option></select></div>'+
+  '<div class="f-group"><label>Nom complet</label><input id="pf-name" placeholder="Ex. Aya N\'Guessan"></div>'+
   '<div class="f-group"><label>Email</label><input id="pf-email" placeholder="email@ecole.ci"></div>'+
   pwFieldHTML('pf-password')+'</div>'+
   '<div style="margin-top:12px;"><label class="field-label" style="margin-top:0;">Matières enseignées</label><div class="chips">'+
@@ -1120,10 +1123,15 @@ function comptesProfs(){
     (db.classes.map(c=>'<label class="f-check"><input type="checkbox" class="pf-cls" value="'+c.id+'"> '+c.name+'</label>').join('') || '<span class="empty">Créez d\'abord des classes</span>')+
   '</div></div>'+
   '<button class="btn-sm" style="margin-top:14px;" onclick="addProf()">Créer le compte</button></div>'+
-  '<div class="panel"><table><thead><tr><th>Professeur</th><th>Email</th><th>Matières</th><th>Classes</th><th></th></tr></thead><tbody>'+
-  (db.profs.map(p=>{
+  '<div class="selector-row"><select onchange="ui.profClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.profClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select></div>'+
+  '<div class="panel"><table><thead><tr><th>'+teacherGenericLabel(true)+'</th><th>Email</th><th>Matières</th><th>Classes</th><th></th></tr></thead><tbody>'+
+  (visibleProfs.map(p=>{
     if(ui.editProf===p.id){
       return '<tr><td colspan="5"><div class="form-grid">'+
+        '<div class="f-group"><label>Civilité</label><select id="ep-civilite"><option value="M" '+(p.civilite!=='Mme'?'selected':'')+'>M.</option><option value="Mme" '+(p.civilite==='Mme'?'selected':'')+'>Mme</option></select></div>'+
         '<div class="f-group"><label>Nom</label><input id="ep-name" value="'+p.name+'"></div>'+
         '<div class="f-group"><label>Email</label><input id="ep-email" value="'+p.email+'"></div>'+
         pwFieldHTML('ep-password')+'</div>'+
@@ -1135,14 +1143,15 @@ function comptesProfs(){
         '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn-sm" onclick="saveProf(\''+p.id+'\')">Enregistrer</button><button class="btn-sm ghost" onclick="ui.editProf=null;renderMain();">Annuler</button></div>'+
         '</td></tr>';
     }
-    return '<tr><td><b>'+p.name+'</b></td><td>'+p.email+'</td>'+
+    return '<tr><td><b>'+(p.civilite==='Mme'?'Mme ':'M. ')+p.name+'</b></td><td>'+p.email+'</td>'+
       '<td>'+(p.subjectIds.map(id=>nameOf(db.subjects,id)).join(', ')||'—')+'</td>'+
       '<td>'+(p.classIds.map(id=>nameOf(db.classes,id)).join(', ')||'—')+'</td>'+
       '<td><button class="edit-btn" onclick="ui.editProf=\''+p.id+'\';renderMain();">Modifier</button><button class="del-btn" onclick="removeProf(\''+p.id+'\')">Supprimer</button></td></tr>';
-  }).join('') || '<tr><td colspan="5" class="empty">Aucun professeur.</td></tr>')+
+  }).join('') || '<tr><td colspan="5" class="empty">Aucun '+teacherGenericLabel(false)+'.</td></tr>')+
   '</tbody></table></div>';
 }
 async function addProf(){
+  const civilite = document.getElementById('pf-civilite').value;
   const name = document.getElementById('pf-name').value.trim();
   const email = document.getElementById('pf-email').value.trim();
   const password = document.getElementById('pf-password').value;
@@ -1152,7 +1161,7 @@ async function addProf(){
   if(!email) return showToast('Indiquez un e-mail — il sert à la connexion');
   const id = await createSchoolAccount(email, name, 'prof', null, password);
   if(!id) return;
-  db.profs.push({id, name, email, subjectIds, classIds});
+  db.profs.push({id, name, email, civilite, subjectIds, classIds});
   saveData(); renderMain();
 }
 async function saveProf(id){
@@ -1166,6 +1175,7 @@ async function saveProf(id){
     if(!ok) return;
   }
   p.name = newName; p.email = newEmail || p.email;
+  p.civilite = document.getElementById('ep-civilite').value;
   p.subjectIds = [...document.querySelectorAll('.ep-sub:checked')].map(c=>c.value);
   p.classIds = [...document.querySelectorAll('.ep-cls:checked')].map(c=>c.value);
   ui.editProf = null; saveData(); renderMain();
@@ -1277,15 +1287,23 @@ function promoteSelectedStudents(){
 }
 
 function comptesParents(){
+  if(ui.parentClassFilter===undefined) ui.parentClassFilter = '';
+  const visibleParents = ui.parentClassFilter
+    ? db.parents.filter(p=>p.studentIds.some(sid=>{const s=db.students.find(x=>x.id===sid); return s && s.classId===ui.parentClassFilter;}))
+    : db.parents;
   return '<div class="panel"><div class="panel-head"><h3>Nouveau compte parent</h3></div>'+
   '<div class="form-grid"><div class="f-group"><label>Nom complet</label><input id="pa-name" placeholder="Ex. M. Yao Konan"></div>'+
   '<div class="f-group"><label>Email</label><input id="pa-email" placeholder="email@gmail.com"></div>'+
   pwFieldHTML('pa-password')+'</div>'+
   '<div style="margin-top:12px;"><label class="field-label" style="margin-top:0;">Enfant(s) lié(s)</label><div class="chips">'+
-  (db.students.map(s=>'<label class="f-check"><input type="checkbox" class="pa-child" value="'+s.id+'"> '+s.name+'</label>').join('') || '<span class="empty">Créez d\'abord des élèves</span>')+
+  (db.students.map(s=>'<label class="f-check"><input type="checkbox" class="pa-child" value="'+s.id+'"> '+s.name+'</label>').join('') || '<span class="empty">Créez d\'abord des '+learnerLabel(false,true)+'</span>')+
   '</div></div><button class="btn-sm" style="margin-top:14px;" onclick="addParent()">Créer le compte</button></div>'+
+  '<div class="selector-row"><select onchange="ui.parentClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.parentClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select></div>'+
   '<div class="panel"><table><thead><tr><th>Parent</th><th>Email</th><th>Enfant(s)</th><th></th></tr></thead><tbody>'+
-  (db.parents.map(p=>{
+  (visibleParents.map(p=>{
     if(ui.editParent===p.id){
       return '<tr><td colspan="4"><div class="form-grid">'+
         '<div class="f-group"><label>Nom</label><input id="epa-name" value="'+p.name+'"></div>'+
@@ -1716,6 +1734,20 @@ function setAttendance(studentId, status){
   saveData(); renderMain();
 }
 
+// Titre individuel : "Maître"/"Maîtresse" au primaire (selon la civilité), "Professeur" ailleurs
+function teacherTitle(prof, capital){
+  const isPrimaire = db.school && db.school.type === 'Primaire';
+  let word = isPrimaire ? (prof && prof.civilite==='Mme' ? 'maîtresse' : 'maître') : 'professeur';
+  if(capital) word = word.charAt(0).toUpperCase()+word.slice(1);
+  return word;
+}
+// Terme générique/pluriel neutre utilisé dans les formulaires et listes
+function teacherGenericLabel(capital){
+  const isPrimaire = db.school && db.school.type === 'Primaire';
+  let word = isPrimaire ? 'enseignant' : 'professeur';
+  if(capital) word = word.charAt(0).toUpperCase()+word.slice(1);
+  return word;
+}
 function learnerLabel(capital, plural){
   const type = (db.school && db.school.type) || '';
   const isHigherEd = type === 'Grande école' || type === 'Université';
