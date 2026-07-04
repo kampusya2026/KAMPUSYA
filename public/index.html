@@ -2260,6 +2260,18 @@ window.addEventListener('beforeinstallprompt', (e) => {
   if(b1) b1.style.display = 'block';
   if(b2) b2.style.display = 'block';
 });
+// Sur iOS/iPadOS, l'événement beforeinstallprompt n'existe pas — on affiche
+// le bouton nous-mêmes ; il ouvrira les instructions manuelles au clic.
+(function(){
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  if(isIOS && !isStandalone){
+    const b1 = document.getElementById('install-btn-login');
+    const b2 = document.getElementById('install-btn-app');
+    if(b1) b1.style.display = 'block';
+    if(b2) b2.style.display = 'block';
+  }
+})();
 async function installApp(){
   if(deferredInstallPrompt){
     deferredInstallPrompt.prompt();
