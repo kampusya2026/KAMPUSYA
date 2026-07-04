@@ -284,7 +284,7 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            msgScope:'eleves', msgClassId:null, msgRecType:'eleve', msgRecId:null, msgRecClassFilter:'',
            editSchoolNameId:null, contactSchoolId:null, contactAdmins:[], contactLoading:false, editContactAdminId:null,
            editClassId:null, editSubjectId:null, selectedStudents:[], eleveClassFilter:'', openArchiveIdx:null,
-           eleveCahierSubject:'', eleveProgSubject:'' };
+           eleveCahierSubject:null, eleveProgSubject:null, eleveNotesSubject:null };
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
@@ -1034,7 +1034,7 @@ function removeSlot(id){ db.schedule = db.schedule.filter(s=>s.id!==id); saveDat
 
 /* ---------- ADMIN: COMPTES (avec édition) ---------- */
 function adminComptes(){
-  return '<div class="page-head"><div><h1>Comptes</h1><div class="sub">Créez et modifiez les comptes professeurs, élèves et parents</div></div></div>'+
+  return '<div class="page-head"><div><h1>Comptes</h1><div class="sub">Créez et modifiez les comptes professeurs, '+learnerLabel(false,true)+' et parents</div></div></div>'+
   '<div class="subtabs">'+
     '<button class="subtab '+(ui.adminAcctTab==='profs'?'active':'')+'" onclick="setAcctTab(\'profs\')">Professeurs ('+db.profs.length+')</button>'+
     '<button class="subtab '+(ui.adminAcctTab==='eleves'?'active':'')+'" onclick="setAcctTab(\'eleves\')">'+learnerLabel(true,true)+' ('+db.students.length+')</button>'+
@@ -1930,14 +1930,18 @@ function eleveEmploi(stu){
 }
 
 function eleveNotes(stu){
-  const evals = db.evals.filter(e=>{
-    const cls = db.classes.find(c=>c.id===stu.classId);
-    return e.classId===stu.classId;
-  });
+  const allEvals = db.evals.filter(e=>e.classId===stu.classId);
+  const subjectsWithEvals = db.subjects.filter(s=>allEvals.some(e=>e.subjectId===s.id));
+  if(ui.eleveNotesSubject===null && subjectsWithEvals.length) ui.eleveNotesSubject = '';
+  const evals = allEvals.filter(e=>!ui.eleveNotesSubject || e.subjectId===ui.eleveNotesSubject);
   const bySubject = {};
   evals.forEach(e=>{ bySubject[e.subjectId] = bySubject[e.subjectId] || []; bySubject[e.subjectId].push(e); });
   const subjectIds = Object.keys(bySubject);
-  return subjectIds.map(sid=>{
+  const filterRow = subjectsWithEvals.length ? '<div class="selector-row"><select onchange="ui.eleveNotesSubject=this.value; renderMain();">'+
+    '<option value="">Toutes les matières</option>'+
+    subjectsWithEvals.map(s=>'<option value="'+s.id+'" '+(s.id===ui.eleveNotesSubject?'selected':'')+'>'+s.name+'</option>').join('')+
+  '</select></div>' : '';
+  const body = subjectIds.map(sid=>{
     const sub = db.subjects.find(s=>s.id===sid);
     const list = bySubject[sid];
     let sum=0, coefSum=0;
@@ -1958,6 +1962,7 @@ function eleveNotes(stu){
     }).join('')+
     '</tbody></table></div>';
   }).join('') || '<div class="panel"><div class="empty">Aucune évaluation enregistrée pour le moment.</div></div>';
+  return filterRow + body;
 }
 function submitJustification(evalId){
   const text = document.getElementById('just-'+evalId).value.trim();
@@ -1970,11 +1975,13 @@ function submitJustification(evalId){
 
 function eleveProgramme(stu){
   const subjectIds = [...new Set(db.programme.filter(p=>p.classId===stu.classId).map(p=>p.subjectId))];
-  if(!ui.eleveProgSubject && subjectIds.length) ui.eleveProgSubject = subjectIds[0];
+  if(ui.eleveProgSubject===null && subjectIds.length) ui.eleveProgSubject = '';
   const filteredIds = ui.eleveProgSubject ? [ui.eleveProgSubject] : subjectIds;
-  return '<div class="selector-row"><select onchange="ui.eleveProgSubject=this.value; renderMain();">'+
+  const filterRow = subjectIds.length ? '<div class="selector-row"><select onchange="ui.eleveProgSubject=this.value; renderMain();">'+
+    '<option value="">Toutes les matières</option>'+
     subjectIds.map(sid=>{const s=db.subjects.find(x=>x.id===sid); return s?'<option value="'+sid+'" '+(sid===ui.eleveProgSubject?'selected':'')+'>'+s.name+'</option>':'';}).join('')+
-  '</select></div>'+
+  '</select></div>' : '';
+  return filterRow+
   (filteredIds.map(sid=>{
     const sub = db.subjects.find(s=>s.id===sid);
     const items = db.programme.filter(p=>p.classId===stu.classId && p.subjectId===sid);
@@ -2098,7 +2105,7 @@ function parentCahierBody(child){
 }
 function eleveCahierBody(stu){
   const subjectsWithEntries = db.subjects.filter(s=>db.journal.some(j=>j.classId===stu.classId && j.subjectId===s.id));
-  if(!ui.eleveCahierSubject && subjectsWithEntries.length) ui.eleveCahierSubject = subjectsWithEntries[0].id;
+  if(ui.eleveCahierSubject===null && subjectsWithEntries.length) ui.eleveCahierSubject = subjectsWithEntries[0].id;
   const entries = db.journal.filter(j=>j.classId===stu.classId && (!ui.eleveCahierSubject || j.subjectId===ui.eleveCahierSubject)).slice().reverse();
   return '<div class="selector-row"><select onchange="ui.eleveCahierSubject=this.value; renderMain();">'+
     '<option value="">Toutes les matières</option>'+
