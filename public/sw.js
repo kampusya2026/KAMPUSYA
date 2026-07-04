@@ -37,3 +37,30 @@ self.addEventListener('fetch', event => {
       .catch(() => caches.match(event.request))
   );
 });
+
+// Réception d'une notification push : s'affiche sur l'écran verrouillé
+// (Android toujours ; iPhone/iPad à partir d'iOS 16.4, uniquement si
+// l'application a été installée sur l'écran d'accueil).
+self.addEventListener('push', event => {
+  let data = { title: 'Kampusya', body: '' };
+  try { data = event.data.json(); } catch(e) {}
+  event.waitUntil(
+    self.registration.showNotification(data.title || 'Kampusya', {
+      body: data.body || '',
+      icon: 'icons/icon-192.png',
+      badge: 'icons/icon-32.png',
+      vibrate: [100, 50, 100]
+    })
+  );
+});
+
+// Clic sur la notification : ouvre (ou remet au premier plan) l'application
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientsArr => {
+      if (clientsArr.length > 0) { return clientsArr[0].focus(); }
+      return self.clients.openWindow('/');
+    })
+  );
+});
