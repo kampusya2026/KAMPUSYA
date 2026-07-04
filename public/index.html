@@ -156,7 +156,6 @@ tr:last-child td{border-bottom:none;}
 .visa-pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;}
 
 .mobile-actions{display:none;align-items:center;gap:8px;flex:none;margin-left:auto;padding-left:10px;}
-.mobile-account-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;background:rgba(255,255,255,0.1);color:#fff;border-radius:9px;font-size:19px;font-weight:700;flex:none;}
 .mobile-account-menu{display:none;position:fixed;top:54px;right:14px;z-index:150;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(27,42,74,0.18);overflow:hidden;min-width:220px;}
 .mobile-account-menu.open{display:flex;flex-direction:column;}
 .mobile-account-menu button{padding:13px 16px;text-align:left;font-size:14px;color:var(--ink);border-bottom:1px solid var(--line);background:#fff;}
@@ -168,7 +167,7 @@ tr:last-child td{border-bottom:none;}
 .notif-bell-desktop:hover{background:rgba(255,255,255,0.08);}
 .notif-badge{display:none;align-items:center;justify-content:center;position:absolute;top:-6px;right:-8px;min-width:16px;height:16px;padding:0 3px;background:var(--red);color:#fff;border-radius:20px;font-size:10px;font-weight:700;line-height:1;}
 .notif-bell-desktop .notif-badge{position:static;margin-left:auto;}
-#notif-bell-mobile{display:flex;align-items:center;justify-content:center;position:relative;width:36px;height:36px;background:rgba(255,255,255,0.1);color:#fff;border-radius:9px;flex:none;}
+.mobile-account-btn{display:flex;align-items:center;justify-content:center;width:36px;height:36px;background:rgba(255,255,255,0.1);color:#fff;border-radius:9px;font-size:19px;font-weight:700;flex:none;}
 @media(max-width:880px){ .mobile-actions{display:flex;} }
 
 .notif-panel{display:none;position:fixed;z-index:160;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(27,42,74,0.22);width:330px;max-height:70vh;overflow-y:auto;top:56px;right:14px;}
@@ -246,7 +245,6 @@ tr:last-child td{border-bottom:none;}
       <div class="side-school"><b id="side-school-name">—</b><span id="side-school-year"></span></div>
       <div class="tabs" id="tabs"></div>
       <div class="mobile-actions">
-        <button class="notif-bell-btn" onclick="toggleNotifPanel()" id="notif-bell-mobile" aria-label="Notifications">🔔<span class="notif-badge" id="notif-badge-mobile"></span></button>
         <button class="mobile-account-btn" onclick="toggleMobileAccountMenu()" id="mobile-account-btn" aria-label="Mon compte">⋮</button>
       </div>
       <button class="notif-bell-btn notif-bell-desktop" onclick="toggleNotifPanel()" id="notif-bell-desktop" aria-label="Notifications">🔔 Notifications<span class="notif-badge" id="notif-badge-desktop"></span></button>
@@ -304,8 +302,9 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            schedClass:null, presDate: todayISO(), notesAdminClass:null, progClass:null, progSubject:null,
            editProf:null, editStudent:null, editParent:null, comportClass:null,
            msgScope:'eleves', msgClassId:null, msgRecType:'eleve', msgRecId:null, msgRecClassFilter:'',
-           editSchoolNameId:null, contactSchoolId:null, contactData:null, contactLoading:false,
-           editClassId:null, editSubjectId:null, selectedStudents:[], eleveClassFilter:'', openArchiveIdx:null };
+           editSchoolNameId:null, contactSchoolId:null, contactAdmins:[], contactLoading:false, editContactAdminId:null,
+           editClassId:null, editSubjectId:null, selectedStudents:[], eleveClassFilter:'', openArchiveIdx:null,
+           eleveCahierSubject:'', eleveProgSubject:'' };
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
@@ -343,7 +342,7 @@ async function loadData(){
   const { data: school } = await sb.from('schools').select('*').eq('id', session.schoolId).single();
   const { data: row } = await sb.from('school_data').select('data').eq('school_id', session.schoolId).maybeSingle();
   db = (row && row.data && Object.keys(row.data).length) ? row.data : emptySchoolData();
-  db.school = { ...db.school, id: session.schoolId, name: school ? school.name : '', year: school ? school.year : '' };
+  db.school = { ...db.school, id: session.schoolId, name: school ? school.name : '', year: school ? school.year : '', type: school ? school.type : '' };
   if(!db.evals) db.evals=[]; if(!db.schedule) db.schedule=[]; if(!db.events) db.events=[];
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.notifications) db.notifications=[];
@@ -407,10 +406,8 @@ function markAllNotifsRead(){
 }
 function renderNotifBadges(){
   const count = unreadNotifCount();
-  ['notif-badge-desktop','notif-badge-mobile'].forEach(id=>{
-    const el = document.getElementById(id);
-    if(el){ el.style.display = count>0 ? 'flex' : 'none'; el.textContent = count>9 ? '9+' : String(count); }
-  });
+  const el = document.getElementById('notif-badge-desktop');
+  if(el){ el.style.display = count>0 ? 'flex' : 'none'; el.textContent = count>9 ? '9+' : String(count); }
 }
 
 // Sauvegarde le bloc de données pédagogiques de l'école courante.
@@ -570,10 +567,8 @@ function renderShell(){
       '<span class="dot" style="background:'+color+'"></span>'+label+'</button>';
   }).join('');
   const bellD = document.getElementById('notif-bell-desktop');
-  const bellM = document.getElementById('notif-bell-mobile');
   if(session.role==='super'){
     if(bellD) bellD.style.display='none';
-    if(bellM) bellM.style.display='none';
   }else{
     if(bellD) bellD.style.display='';
     renderNotifBadges();
@@ -583,9 +578,9 @@ function renderShell(){
 function roleLabel(){
   if(session.role==='admin') return 'Administration';
   if(session.role==='prof') return 'Professeur';
-  if(session.role==='eleve') return 'Élève';
+  if(session.role==='eleve') return learnerLabel(true, false);
   if(session.role==='super') return 'Super Administrateur';
-  return "Parent d'élève";
+  return "Parent d'"+learnerLabel(false, false);
 }
 function currentAccount(){
   if(session.role==='admin') return {name: session.fullName || 'Administration'};
@@ -641,7 +636,7 @@ function adminOverview(){
   '<div class="cards-row">'+
     '<div class="stat-card"><div class="n">'+db.classes.length+'</div><div class="l">Classes</div></div>'+
     '<div class="stat-card"><div class="n">'+db.profs.length+'</div><div class="l">Professeurs</div></div>'+
-    '<div class="stat-card"><div class="n">'+db.students.length+'</div><div class="l">Élèves</div></div>'+
+    '<div class="stat-card"><div class="n">'+db.students.length+'</div><div class="l">'+learnerLabel(true,true)+'</div></div>'+
     '<div class="stat-card"><div class="n">'+db.parents.length+'</div><div class="l">Comptes parents</div></div>'+
   '</div>'+
   '<div class="panel"><div class="panel-head"><h3>Organisation de l\'année scolaire</h3></div>'+
@@ -1128,7 +1123,7 @@ function adminComptes(){
   return '<div class="page-head"><div><h1>Comptes</h1><div class="sub">Créez et modifiez les comptes professeurs, élèves et parents</div></div></div>'+
   '<div class="subtabs">'+
     '<button class="subtab '+(ui.adminAcctTab==='profs'?'active':'')+'" onclick="setAcctTab(\'profs\')">Professeurs ('+db.profs.length+')</button>'+
-    '<button class="subtab '+(ui.adminAcctTab==='eleves'?'active':'')+'" onclick="setAcctTab(\'eleves\')">Élèves ('+db.students.length+')</button>'+
+    '<button class="subtab '+(ui.adminAcctTab==='eleves'?'active':'')+'" onclick="setAcctTab(\'eleves\')">'+learnerLabel(true,true)+' ('+db.students.length+')</button>'+
     '<button class="subtab '+(ui.adminAcctTab==='parents'?'active':'')+'" onclick="setAcctTab(\'parents\')">Parents ('+db.parents.length+')</button>'+
   '</div>'+
   (ui.adminAcctTab==='profs'?comptesProfs():ui.adminAcctTab==='eleves'?comptesEleves():comptesParents());
@@ -1273,27 +1268,27 @@ function comptesEleves(){
   const visibleClasses = ui.eleveClassFilter ? db.classes.filter(c=>c.id===ui.eleveClassFilter) : db.classes;
   const visibleIds = visibleClasses.flatMap(c=>db.students.filter(s=>s.classId===c.id).map(s=>s.id));
   const allVisibleSelected = visibleIds.length>0 && visibleIds.every(id=>ui.selectedStudents.includes(id));
-  return '<div class="panel"><div class="panel-head"><h3>Nouvel élève</h3></div>'+
+  return '<div class="panel"><div class="panel-head"><h3>Nouvel '+learnerLabel(false,false)+'</h3></div>'+
   '<div class="form-grid"><div class="f-group"><label>Nom complet</label><input id="el-name" placeholder="Ex. Kouadio Affoué"></div>'+
   '<div class="f-group"><label>E-mail (connexion)</label><input id="el-email" placeholder="eleve@ecole.ci"></div>'+
   pwFieldHTML('el-password')+
   '<div class="f-group"><label>Classe</label><select id="el-class">'+(db.classes.map(c=>'<option value="'+c.id+'">'+c.name+'</option>').join('') || '<option disabled>Aucune classe</option>')+'</select></div>'+
   '<button class="btn-sm" onclick="addStudent()">Ajouter</button></div></div>'+
   (selCount>0 ? '<div class="panel" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--amber-bg);border-color:var(--gold);">'+
-    '<b>'+selCount+' élève'+(selCount>1?'s':'')+' sélectionné'+(selCount>1?'s':'')+'</b>'+
+    '<b>'+selCount+' '+learnerLabel(false,selCount>1)+' sélectionné'+(selCount>1?'s':'')+'</b>'+
     '<select id="promote-class">'+db.classes.map(c=>'<option value="'+c.id+'">'+c.name+'</option>').join('')+'</select>'+
     '<button class="btn-sm" onclick="promoteSelectedStudents()">Faire passer en classe supérieure</button>'+
     '<button class="btn-sm ghost" onclick="ui.selectedStudents=[];renderMain();">Annuler la sélection</button>'+
     '</div>' : '')+
   '<div class="selector-row"><select onchange="ui.eleveClassFilter=this.value; renderMain();">'+
-    '<option value="">Toutes les classes ('+db.students.length+' élèves)</option>'+
+    '<option value="">Toutes les classes ('+db.students.length+' '+learnerLabel(false,true)+')</option>'+
     db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.eleveClassFilter?'selected':'')+'>'+c.name+' ('+db.students.filter(s=>s.classId===c.id).length+')</option>').join('')+
   '</select></div>'+
-  '<div class="panel"><table><thead><tr><th><input type="checkbox" onchange="toggleSelectAllStudents(this.checked)" '+(allVisibleSelected?'checked':'')+'></th><th>Élève</th><th>Classe</th><th>Parent lié</th><th></th></tr></thead><tbody>'+
+  '<div class="panel"><table><thead><tr><th><input type="checkbox" onchange="toggleSelectAllStudents(this.checked)" '+(allVisibleSelected?'checked':'')+'></th><th>'+learnerLabel(true,false)+'</th><th>Classe</th><th>Parent lié</th><th></th></tr></thead><tbody>'+
   (visibleClasses.map(c=>{
     const classStudents = db.students.filter(s=>s.classId===c.id);
     if(!classStudents.length) return '';
-    const header = '<tr><td colspan="5" style="background:var(--paper-alt);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--gray);padding:8px 10px;border-bottom:1px solid var(--line);">'+c.name+' — '+classStudents.length+' élève'+(classStudents.length>1?'s':'')+'</td></tr>';
+    const header = '<tr><td colspan="5" style="background:var(--paper-alt);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--gray);padding:8px 10px;border-bottom:1px solid var(--line);">'+c.name+' — '+classStudents.length+' '+learnerLabel(false,classStudents.length>1)+'</td></tr>';
     const rows = classStudents.map(s=>{
       const par = db.parents.find(p=>p.studentIds.includes(s.id));
       if(ui.editStudent===s.id){
@@ -1807,6 +1802,14 @@ function setAttendance(studentId, status){
   saveData(); renderMain();
 }
 
+function learnerLabel(capital, plural){
+  const type = (db.school && db.school.type) || '';
+  const isHigherEd = type === 'Grande école' || type === 'Université';
+  let word = isHigherEd ? 'étudiant' : 'élève';
+  if(plural) word += 's';
+  if(capital) word = word.charAt(0).toUpperCase() + word.slice(1);
+  return word;
+}
 function getPeriodes(){
   const mode = db.school && db.school.periodeMode === 'semestre' ? 'semestre' : 'trimestre';
   return mode==='semestre' ? ['Semestre 1','Semestre 2'] : ['Trimestre 1','Trimestre 2','Trimestre 3'];
@@ -1992,7 +1995,7 @@ function renderEleve(){
   if(ui.eleveTab==='emploi') body = eleveEmploi(stu);
   if(ui.eleveTab==='absences') body = eleveAbsences(stu);
   if(ui.eleveTab==='notes') body = eleveNotes(stu);
-  if(ui.eleveTab==='cahier') body = parentCahierBody(stu);
+  if(ui.eleveTab==='cahier') body = eleveCahierBody(stu);
   if(ui.eleveTab==='programme') body = eleveProgramme(stu);
   if(ui.eleveTab==='agenda') body = agendaListHTML('eleve', session.acctId);
   if(ui.eleveTab==='comportement') body = eleveComportement(stu);
@@ -2053,14 +2056,19 @@ function submitJustification(evalId){
 
 function eleveProgramme(stu){
   const subjectIds = [...new Set(db.programme.filter(p=>p.classId===stu.classId).map(p=>p.subjectId))];
-  return subjectIds.map(sid=>{
+  if(!ui.eleveProgSubject && subjectIds.length) ui.eleveProgSubject = subjectIds[0];
+  const filteredIds = ui.eleveProgSubject ? [ui.eleveProgSubject] : subjectIds;
+  return '<div class="selector-row"><select onchange="ui.eleveProgSubject=this.value; renderMain();">'+
+    subjectIds.map(sid=>{const s=db.subjects.find(x=>x.id===sid); return s?'<option value="'+sid+'" '+(sid===ui.eleveProgSubject?'selected':'')+'>'+s.name+'</option>':'';}).join('')+
+  '</select></div>'+
+  (filteredIds.map(sid=>{
     const sub = db.subjects.find(s=>s.id===sid);
     const items = db.programme.filter(p=>p.classId===stu.classId && p.subjectId===sid);
     return '<div class="panel"><div class="panel-head"><h3>'+(sub?sub.name:'')+'</h3></div>'+
     '<table><thead><tr><th>Chapitre</th><th>Période</th><th>Statut</th></tr></thead><tbody>'+
     items.map(p=>'<tr><td><b>'+p.chapitre+'</b></td><td>'+p.periode+'</td><td><span class="tag '+(p.statut==='termine'?'green':p.statut==='en_cours'?'amber':'gray')+'">'+statutLabel(p.statut)+'</span></td></tr>').join('')+
     '</tbody></table></div>';
-  }).join('') || '<div class="panel"><div class="empty">Aucun programme renseigné pour le moment.</div></div>';
+  }).join('') || '<div class="panel"><div class="empty">Aucun programme renseigné pour le moment.</div></div>');
 }
 
 function eleveComportement(stu){
@@ -2168,6 +2176,21 @@ function parentNotes(child){
 function parentCahierBody(child){
   const entries = db.journal.filter(j=>j.classId===child.classId).slice().reverse();
   return '<div class="panel">'+
+    (entries.map(j=>{
+      const sub = db.subjects.find(s=>s.id===j.subjectId);
+      return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+'</div>';
+    }).join('') || '<div class="empty">Aucune entrée pour le moment.</div>')+
+  '</div>';
+}
+function eleveCahierBody(stu){
+  const subjectsWithEntries = db.subjects.filter(s=>db.journal.some(j=>j.classId===stu.classId && j.subjectId===s.id));
+  if(!ui.eleveCahierSubject && subjectsWithEntries.length) ui.eleveCahierSubject = subjectsWithEntries[0].id;
+  const entries = db.journal.filter(j=>j.classId===stu.classId && (!ui.eleveCahierSubject || j.subjectId===ui.eleveCahierSubject)).slice().reverse();
+  return '<div class="selector-row"><select onchange="ui.eleveCahierSubject=this.value; renderMain();">'+
+    '<option value="">Toutes les matières</option>'+
+    subjectsWithEntries.map(s=>'<option value="'+s.id+'" '+(s.id===ui.eleveCahierSubject?'selected':'')+'>'+s.name+'</option>').join('')+
+  '</select></div>'+
+  '<div class="panel">'+
     (entries.map(j=>{
       const sub = db.subjects.find(s=>s.id===j.subjectId);
       return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+'</div>';
@@ -2289,31 +2312,44 @@ async function updateSchoolType(schoolId, type){
   await loadData(); renderMain();
 }
 function contactPanelHTML(schoolId){
-  if(ui.contactLoading) return '<div class="empty">Chargement du contact...</div>';
-  const c = ui.contactData;
-  if(!c) return '<div class="empty">Aucun compte administrateur trouvé pour cette école. Utilisez "Compte admin" pour en créer un.</div>';
-  return '<div class="form-grid">'+
-    '<div class="f-group"><label>Nom du responsable</label><input id="ca-name" value="'+(c.full_name||'')+'"></div>'+
-    '<div class="f-group"><label>E-mail (connexion)</label><input id="ca-email" value="'+(c.email||'')+'"></div>'+
-    pwFieldHTML('ca-password')+
-    '<button class="btn-sm" onclick="saveAdminContact(\''+c.id+'\')">Enregistrer</button>'+
-    '<button class="btn-sm danger" onclick="deleteAdminContact(\''+c.id+'\',\''+schoolId+'\')">Supprimer ce compte</button>'+
-  '</div>'+
-  '<div style="font-size:12px;color:var(--gray);margin-top:6px;">Laisser le mot de passe vide pour ne pas le changer — remplir pour le réinitialiser.</div>';
+  if(ui.contactLoading) return '<div class="empty">Chargement des comptes admin...</div>';
+  const list = ui.contactAdmins || [];
+  if(!list.length) return '<div class="empty">Aucun compte administrateur trouvé pour cette école. Utilisez "Compte admin" pour en créer un.</div>';
+  return '<div class="panel-head" style="margin-bottom:10px;"><h3 style="font-size:14px;">'+list.length+' compte'+(list.length>1?'s':'')+' administrateur'+(list.length>1?'s':'')+'</h3></div>'+
+  list.map(c=>{
+    if(ui.editContactAdminId===c.id){
+      return '<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px;">'+
+        '<div class="form-grid">'+
+        '<div class="f-group"><label>Nom du responsable</label><input id="ca-name-'+c.id+'" value="'+(c.full_name||'')+'"></div>'+
+        '<div class="f-group"><label>E-mail (connexion)</label><input id="ca-email-'+c.id+'" value="'+(c.email||'')+'"></div>'+
+        pwFieldHTML('ca-password-'+c.id)+
+        '</div>'+
+        '<div style="font-size:12px;color:var(--gray);margin:6px 0 10px;">Laisser le mot de passe vide pour ne pas le changer — remplir pour le réinitialiser.</div>'+
+        '<div style="display:flex;gap:8px;">'+
+        '<button class="btn-sm" onclick="saveAdminContact(\''+c.id+'\')">Enregistrer</button>'+
+        '<button class="btn-sm ghost" onclick="ui.editContactAdminId=null; renderMain();">Annuler</button>'+
+        '<button class="btn-sm danger" onclick="deleteAdminContact(\''+c.id+'\',\''+schoolId+'\')">Supprimer ce compte</button>'+
+        '</div></div>';
+    }
+    return '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:12px;margin-top:12px;">'+
+      '<div><b>'+(c.full_name||'(sans nom)')+'</b><br><span style="color:var(--gray);font-size:12.5px;">'+(c.email||'')+'</span></div>'+
+      '<button class="edit-btn" onclick="ui.editContactAdminId=\''+c.id+'\'; renderMain();">Modifier</button>'+
+      '</div>';
+  }).join('');
 }
 async function openContactPanel(schoolId){
   if(ui.contactSchoolId === schoolId){ ui.contactSchoolId = null; renderMain(); return; }
-  ui.contactSchoolId = schoolId; ui.contactLoading = true; ui.contactData = null;
+  ui.contactSchoolId = schoolId; ui.contactLoading = true; ui.contactAdmins = []; ui.editContactAdminId = null;
   renderMain();
-  const { data } = await sb.from('profiles').select('id, full_name, email').eq('school_id', schoolId).eq('role','admin').limit(1);
-  ui.contactData = (data && data[0]) ? data[0] : null;
+  const { data } = await sb.from('profiles').select('id, full_name, email').eq('school_id', schoolId).eq('role','admin').order('full_name');
+  ui.contactAdmins = data || [];
   ui.contactLoading = false;
   renderMain();
 }
 async function saveAdminContact(userId){
-  const full_name = document.getElementById('ca-name').value.trim();
-  const email = document.getElementById('ca-email').value.trim();
-  const password = document.getElementById('ca-password').value;
+  const full_name = document.getElementById('ca-name-'+userId).value.trim();
+  const email = document.getElementById('ca-email-'+userId).value.trim();
+  const password = document.getElementById('ca-password-'+userId).value;
   const { data: { session: authSession } } = await sb.auth.getSession();
   const requesterToken = authSession ? authSession.access_token : null;
   try{
@@ -2323,7 +2359,10 @@ async function saveAdminContact(userId){
     });
     if(!res.ok){ showToast('Erreur : '+await res.text()); return; }
     showToast(password ? 'Contact mis à jour — nouveau mot de passe à transmettre' : 'Contact mis à jour');
-    ui.contactSchoolId = null; renderMain();
+    const admin = ui.contactAdmins.find(a=>a.id===userId);
+    if(admin){ admin.full_name = full_name; admin.email = email; }
+    ui.editContactAdminId = null;
+    renderMain();
   }catch(e){ showToast('Erreur réseau'); }
 }
 async function deleteAdminContact(userId, schoolId){
@@ -2337,7 +2376,9 @@ async function deleteAdminContact(userId, schoolId){
     });
     if(!res.ok){ showToast('Erreur : '+await res.text()); return; }
     showToast('Compte supprimé');
-    ui.contactSchoolId = null; renderMain();
+    ui.contactAdmins = ui.contactAdmins.filter(a=>a.id!==userId);
+    ui.editContactAdminId = null;
+    renderMain();
   }catch(e){ showToast('Erreur réseau'); }
 }
 async function saveSchoolName(schoolId){
