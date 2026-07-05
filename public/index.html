@@ -316,7 +316,7 @@ async function loadData(){
     db = { schools: (schools||[]).map(s => ({
       id: s.id, name: s.name, contact: s.contact, plan: s.plan, type: s.type,
       status: s.status, nextDue: s.next_due,
-      payments: (payments||[]).filter(p => p.school_id === s.id).map(p => ({date:p.pay_date, amount:Number(p.amount), note:p.note}))
+      payments: (payments||[]).filter(p => p.school_id === s.id).map(p => ({id:p.id, date:p.pay_date, amount:Number(p.amount), note:p.note}))
     })), totalStudents };
     return;
   }
@@ -2426,8 +2426,9 @@ function schoolsAdmin(){
         '<button class="btn-xs" onclick="generatePayDunyaLink(\''+s.id+'\',\'mensuel\')">Générer un lien PayDunya (1 mois)</button>'+
         '<button class="btn-xs" onclick="generatePayDunyaLink(\''+s.id+'\',\'annuel\')">Générer un lien PayDunya (1 an)</button>'+
       '</div>' : '')+
-      (s.payments.length ? '<div style="margin-top:12px;"><table><thead><tr><th>Date</th><th>Montant</th><th>Note</th></tr></thead><tbody>'+
-        s.payments.slice().reverse().map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td><td>'+(p.note||'—')+'</td></tr>').join('')+
+      (s.payments.length ? '<div style="margin-top:12px;"><table><thead><tr><th>Date</th><th>Montant</th><th>Note</th><th></th></tr></thead><tbody>'+
+        s.payments.slice().reverse().map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td><td>'+(p.note||'—')+'</td>'+
+        '<td>'+(p.id?'<button class="del-btn" onclick="deletePayment(\''+p.id+'\',\''+s.id+'\')">Supprimer</button>':'')+'</td></tr>').join('')+
         '</tbody></table></div>' : '')+
       '</td></tr>' : '';
     const adminForm = ui.adminSchoolId===s.id ? '<tr><td colspan="7"><div class="form-grid">'+
@@ -2584,6 +2585,13 @@ async function recordPayment(id){
   if(e1 || e2){ showToast('Erreur lors de l\'enregistrement'); return; }
   ui.paySchoolId = null;
   showToast('Paiement enregistré — accès actif');
+  await loadData(); renderMain();
+}
+async function deletePayment(paymentId, schoolId){
+  if(!confirm('Supprimer ce paiement ? À utiliser en cas de remboursement ou d\'erreur de saisie. Cette action ne modifie pas automatiquement le statut ou l\'échéance de l\'école — pense à les ajuster toi-même si besoin.')) return;
+  const { error } = await sb.from('payments').delete().eq('id', paymentId);
+  if(error){ showToast('Erreur : '+error.message); return; }
+  showToast('Paiement supprimé');
   await loadData(); renderMain();
 }
 
