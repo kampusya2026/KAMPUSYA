@@ -13,7 +13,7 @@
 const { createClient } = require('@supabase/supabase-js');
 
 const PLAN_PRICES = {
-  starter:  { mensuel: 75000,  annuel: 750000 },
+  starter:  { mensuel: 750,  annuel: 750000 },
   standard: { mensuel: 150000, annuel: 1500000 },
   premium:  { mensuel: 300000, annuel: 3000000 },
 };
