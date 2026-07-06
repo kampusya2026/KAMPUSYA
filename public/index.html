@@ -285,7 +285,9 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            editSchoolNameId:null, contactSchoolId:null, contactAdmins:[], contactLoading:false, editContactAdminId:null,
            editClassId:null, editSubjectId:null, selectedStudents:[], eleveClassFilter:'', openArchiveIdx:null,
            eleveCahierSubject:null, eleveProgSubject:null, eleveNotesSubject:null,
-           bulletinClass:null, bulletinPeriode:null };
+           bulletinClass:null, bulletinPeriode:null,
+           financeTab:'scolarite', financeClassFilter:'', payScolariteId:null, financeFactureType:'eleve',
+           trancheClass:null, detailScolariteId:null, paySalaireId:null };
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
@@ -296,7 +298,9 @@ function emptySchoolData(){
     school: { id: session.schoolId, name: '', year: '' },
     classes: [], subjects: [], profs: [], students: [], parents: [], schedule: [],
     attendance: [], grades: [], evals: [], journal: [],
-    events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: []
+    events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [],
+    finance: { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [],
+               tranches: [], personnel: [], paiementsSalaires: [], relances: [] }
   };
 }
 
@@ -328,6 +332,9 @@ async function loadData(){
   if(!db.evals) db.evals=[]; if(!db.schedule) db.schedule=[]; if(!db.events) db.events=[];
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
+  if(!db.finance) db.finance = { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [], tranches: [], personnel: [], paiementsSalaires: [], relances: [] };
+  if(!db.finance.tranches) db.finance.tranches=[]; if(!db.finance.personnel) db.finance.personnel=[];
+  if(!db.finance.paiementsSalaires) db.finance.paiementsSalaires=[]; if(!db.finance.relances) db.finance.relances=[];
   if(!db.notifications) db.notifications=[];
 }
 
@@ -459,7 +466,7 @@ async function logout(){
 const TABS = {
   admin:[ ['overview','Tableau de bord','#C9952C'], ['classes','Classes','#2F6B4F'], ['subjects','Matières','#1B2A4A'],
           ['schedule',"Emplois du temps",'#2F6B4F'], ['comptes','Comptes','#B23A33'], ['presences','Présences','#B23A33'],
-          ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'],
+          ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['finances','Finances','#2F6B4F'], ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'],
           ['comportement','Comportement','#A87820'], ['messagerie','Messagerie','#2E4271'], ['archives','Archives','#6B6B63'] ],
   prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
          ['programme','Programme annuel','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
@@ -541,6 +548,7 @@ function renderAdmin(){
   if(ui.adminTab==='presences') return adminPresences();
   if(ui.adminTab==='notes') return adminNotes();
   if(ui.adminTab==='bulletins') return adminBulletins();
+  if(ui.adminTab==='finances') return adminFinances();
   if(ui.adminTab==='programme') return adminProgramme();
   if(ui.adminTab==='agenda') return adminAgenda();
   if(ui.adminTab==='comportement') return adminComportement();
@@ -1581,6 +1589,438 @@ function eleveBulletins(stu){
   (list.map(b=>'<tr><td>'+b.periode+'</td><td>'+b.year+'</td><td class="mono"><b>'+b.moyenneGenerale+'</b>/20</td><td>'+b.publishedAt+'</td>'+
     '<td><button class="btn-xs" onclick="downloadBulletinPDF(\''+b.id+'\')">Télécharger le PDF</button></td></tr>').join('') || '<tr><td colspan="5" class="empty">Aucun bulletin publié pour le moment.</td></tr>')+
   '</tbody></table></div>';
+}
+
+/* ============================================================
+   ADMIN : FINANCES (scolarité, factures, trésorerie)
+   ============================================================ */
+function scolariteFor(studentId){
+  return db.finance.scolarite.find(s=>s.studentId===studentId && s.year===db.school.year);
+}
+function paidFor(studentId){
+  return db.finance.paiementsScolarite.filter(p=>p.studentId===studentId && p.year===db.school.year)
+    .reduce((sum,p)=>sum+p.montant, 0);
+}
+function classTranches(classId){
+  return db.finance.tranches.filter(t=>t.classId===classId && t.year===db.school.year).sort((a,b)=>a.ordre-b.ordre);
+}
+function totalDuFor(studentId, classId){
+  const tranches = classTranches(classId);
+  if(tranches.length) return tranches.reduce((s,t)=>s+t.montant,0);
+  const sc = scolariteFor(studentId);
+  return sc ? sc.fraisTotal : 0;
+}
+function studentTrancheStatus(studentId, classId){
+  const tranches = classTranches(classId);
+  const paye = paidFor(studentId);
+  let cumul = 0;
+  return tranches.map(t=>{
+    const debut = cumul;
+    cumul += t.montant;
+    const statut = paye >= cumul ? 'payee' : (paye > debut ? 'partielle' : 'impayee');
+    const enRetard = statut!=='payee' && t.echeance && t.echeance < todayISO();
+    return { id:t.id, label:t.label, montant:t.montant, echeance:t.echeance, statut, enRetard };
+  });
+}
+function studentEnRetard(studentId, classId){
+  const tranches = classTranches(classId);
+  if(tranches.length) return studentTrancheStatus(studentId, classId).some(t=>t.enRetard);
+  const sc = scolariteFor(studentId);
+  if(!sc || !sc.echeance) return false;
+  return (sc.fraisTotal - paidFor(studentId)) > 0 && sc.echeance < todayISO();
+}
+function adminFinances(){
+  if(ui.financeTab===undefined) ui.financeTab='scolarite';
+  return '<div class="page-head"><div><h1>Finances</h1><div class="sub">Scolarité, tranches, salaires, factures et trésorerie de l\'établissement</div></div>'+
+  '<button class="btn-sm ghost" onclick="exportFinanceExcel()">Exporter en Excel</button></div>'+
+  '<div class="subtabs">'+
+    '<button class="subtab '+(ui.financeTab==='scolarite'?'active':'')+'" onclick="ui.financeTab=\'scolarite\';renderMain();">Scolarité</button>'+
+    '<button class="subtab '+(ui.financeTab==='tranches'?'active':'')+'" onclick="ui.financeTab=\'tranches\';renderMain();">Tranches</button>'+
+    '<button class="subtab '+(ui.financeTab==='relances'?'active':'')+'" onclick="ui.financeTab=\'relances\';renderMain();">Relances</button>'+
+    '<button class="subtab '+(ui.financeTab==='salaires'?'active':'')+'" onclick="ui.financeTab=\'salaires\';renderMain();">Salaires</button>'+
+    '<button class="subtab '+(ui.financeTab==='factures'?'active':'')+'" onclick="ui.financeTab=\'factures\';renderMain();">Factures</button>'+
+    '<button class="subtab '+(ui.financeTab==='tresorerie'?'active':'')+'" onclick="ui.financeTab=\'tresorerie\';renderMain();">Trésorerie</button>'+
+  '</div>'+
+  (ui.financeTab==='scolarite' ? adminFinanceScolarite()
+   : ui.financeTab==='tranches' ? adminFinanceTranches()
+   : ui.financeTab==='relances' ? adminFinanceRelances()
+   : ui.financeTab==='salaires' ? adminFinanceSalaires()
+   : ui.financeTab==='factures' ? adminFinanceFactures()
+   : adminFinanceTresorerie());
+}
+
+/* ---------- SCOLARITÉ ---------- */
+function adminFinanceScolarite(){
+  if(ui.financeClassFilter===undefined) ui.financeClassFilter='';
+  const visibleClasses = ui.financeClassFilter ? db.classes.filter(c=>c.id===ui.financeClassFilter) : db.classes;
+  let totalDu=0, totalPaye=0, nbRetard=0;
+  db.students.forEach(s=>{
+    totalDu += totalDuFor(s.id, s.classId); totalPaye += paidFor(s.id);
+    if(studentEnRetard(s.id, s.classId)) nbRetard++;
+  });
+  return '<div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">'+
+    '<div class="stat-card"><div class="n">'+totalDu.toLocaleString('fr-FR')+' F</div><div class="l">Total attendu ('+db.school.year+')</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--green);">'+totalPaye.toLocaleString('fr-FR')+' F</div><div class="l">Total encaissé</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--red);">'+(totalDu-totalPaye).toLocaleString('fr-FR')+' F</div><div class="l">Reste à recouvrer</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--red);">'+nbRetard+'</div><div class="l">'+learnerLabel(true,nbRetard>1)+' en retard</div></div>'+
+  '</div>'+
+  '<div class="selector-row"><select onchange="ui.financeClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.financeClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select></div>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Classe</th><th>Frais total</th><th>Payé</th><th>Reste</th><th>Statut</th><th></th></tr></thead><tbody>'+
+  (visibleClasses.map(c=>{
+    const students = db.students.filter(s=>s.classId===c.id);
+    const tranches = classTranches(c.id);
+    return students.map(stu=>{
+      const sc = scolariteFor(stu.id);
+      const paye = paidFor(stu.id);
+      const total = totalDuFor(stu.id, c.id);
+      const reste = total - paye;
+      const enRetard = studentEnRetard(stu.id, c.id);
+      const hasTranches = tranches.length>0;
+      if(ui.editScolariteId===stu.id){
+        return '<tr><td colspan="7"><div class="form-grid">'+
+          '<div class="f-group"><label>'+learnerLabel(true,false)+'</label><input value="'+stu.name+'" disabled></div>'+
+          '<div class="f-group"><label>Frais total (F CFA)</label><input id="sc-total-'+stu.id+'" type="number" value="'+(sc?sc.fraisTotal:0)+'"></div>'+
+          '<div class="f-group"><label>Échéance</label><input id="sc-echeance-'+stu.id+'" type="date" value="'+(sc?sc.echeance:'')+'"></div>'+
+          '<button class="btn-sm" onclick="saveScolarite(\''+stu.id+'\')">Enregistrer</button>'+
+          '<button class="btn-sm ghost" onclick="ui.editScolariteId=null;renderMain();">Annuler</button>'+
+          '</div></td></tr>';
+      }
+      const payForm = ui.payScolariteId===stu.id ? '<tr><td colspan="7"><div class="form-grid">'+
+        '<div class="f-group"><label>Montant reçu (F CFA)</label><input id="pay-sc-montant" type="number" placeholder="Ex. 50000"></div>'+
+        '<div class="f-group"><label>Date</label><input id="pay-sc-date" type="date" value="'+todayISO()+'"></div>'+
+        '<div class="f-group"><label>Mode</label><select id="pay-sc-mode"><option>Espèces</option><option>Mobile Money</option><option>Virement</option><option>Chèque</option></select></div>'+
+        '<button class="btn-sm" onclick="addPaiementScolarite(\''+stu.id+'\')">Enregistrer le paiement</button>'+
+        '</div></td></tr>' : '';
+      const detailRow = ui.detailScolariteId===stu.id && hasTranches ? '<tr><td colspan="7">'+
+        '<table style="margin-top:6px;"><thead><tr><th>Tranche</th><th>Montant</th><th>Échéance</th><th>Statut</th></tr></thead><tbody>'+
+        studentTrancheStatus(stu.id, c.id).map(t=>'<tr><td>'+t.label+'</td><td class="mono">'+t.montant.toLocaleString('fr-FR')+' F</td><td class="mono">'+(t.echeance||'—')+'</td>'+
+          '<td><span class="tag '+(t.statut==='payee'?'green':t.enRetard?'red':'amber')+'">'+(t.statut==='payee'?'Payée':t.statut==='partielle'?'Partielle':(t.enRetard?'En retard':'À venir'))+'</span></td></tr>').join('')+
+        '</tbody></table></td></tr>' : '';
+      return '<tr><td><b>'+stu.name+'</b></td><td>'+c.name+'</td><td class="mono">'+total.toLocaleString('fr-FR')+' F</td>'+
+        '<td class="mono" style="color:var(--green);">'+paye.toLocaleString('fr-FR')+' F</td>'+
+        '<td class="mono" style="color:'+(reste>0?'var(--red)':'var(--green)')+';"><b>'+reste.toLocaleString('fr-FR')+' F</b></td>'+
+        '<td>'+(reste<=0 ? '<span class="tag green">Soldé</span>' : enRetard ? '<span class="tag red">En retard</span>' : '<span class="tag amber">En cours</span>')+'</td>'+
+        '<td style="display:flex;gap:4px;flex-wrap:wrap;">'+
+          (hasTranches ? '<button class="btn-xs" onclick="ui.detailScolariteId=(ui.detailScolariteId===\''+stu.id+'\'?null:\''+stu.id+'\');renderMain();">Détail</button>' : '<button class="edit-btn" onclick="ui.editScolariteId=\''+stu.id+'\';renderMain();">Frais</button>')+
+          '<button class="btn-xs" onclick="ui.payScolariteId=(ui.payScolariteId===\''+stu.id+'\'?null:\''+stu.id+'\');renderMain();">Paiement</button>'+
+        '</td></tr>'+detailRow+payForm;
+    }).join('');
+  }).join('') || '<tr><td colspan="7" class="empty">Aucun '+learnerLabel(false,false)+'.</td></tr>')+
+  '</tbody></table></div>';
+}
+function saveScolarite(studentId){
+  const total = Number(document.getElementById('sc-total-'+studentId).value) || 0;
+  const echeance = document.getElementById('sc-echeance-'+studentId).value;
+  const stu = db.students.find(s=>s.id===studentId);
+  let sc = scolariteFor(studentId);
+  if(!sc){
+    sc = { id: uid('scol'), studentId, classId: stu.classId, year: db.school.year, fraisTotal: total, echeance };
+    db.finance.scolarite.push(sc);
+  }else{
+    sc.fraisTotal = total; sc.echeance = echeance;
+  }
+  ui.editScolariteId = null;
+  saveData(); renderMain(); showToast('Frais de scolarité enregistrés');
+}
+function addPaiementScolarite(studentId){
+  const montant = Number(document.getElementById('pay-sc-montant').value);
+  const date = document.getElementById('pay-sc-date').value || todayISO();
+  const mode = document.getElementById('pay-sc-mode').value;
+  if(!montant) return showToast('Indiquez un montant');
+  db.finance.paiementsScolarite.push({ id: uid('psc'), studentId, year: db.school.year, montant, date, mode });
+  // Reflète aussi ce paiement dans la trésorerie générale de l'établissement
+  const stu = db.students.find(s=>s.id===studentId);
+  db.finance.tresorerie.push({ id: uid('tr'), date, sens:'entree', categorie:'scolarite', tiers: stu?stu.name:'', montant, description: 'Paiement scolarité — '+mode });
+  ui.payScolariteId = null;
+  saveData(); renderMain(); showToast('Paiement enregistré');
+}
+
+/* ---------- TRANCHES (paiements échelonnés) ---------- */
+function adminFinanceTranches(){
+  if(!ui.trancheClass && db.classes.length) ui.trancheClass = db.classes[0].id;
+  const tranches = classTranches(ui.trancheClass);
+  const total = tranches.reduce((s,t)=>s+t.montant,0);
+  return '<div class="selector-row"><select onchange="ui.trancheClass=this.value; renderMain();">'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.trancheClass?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Ajouter une tranche — '+nameOf(db.classes,ui.trancheClass)+'</h3></div>'+
+  '<div class="sub" style="margin-bottom:12px;">Définissez les tranches de paiement pour cette classe (ex. Inscription, Trimestre 1, Trimestre 2...). Le total remplace automatiquement le montant "Frais total" pour tous les élèves de cette classe.</div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Intitulé</label><input id="tc-label" placeholder="Ex. Trimestre 1"></div>'+
+    '<div class="f-group"><label>Montant (F CFA)</label><input id="tc-montant" type="number" placeholder="Ex. 50000"></div>'+
+    '<div class="f-group"><label>Échéance</label><input id="tc-echeance" type="date" value="'+todayISO()+'"></div>'+
+    '<button class="btn-sm" onclick="addTranche()">Ajouter</button>'+
+  '</div></div>'+
+  '<div class="panel"><table><thead><tr><th>Ordre</th><th>Intitulé</th><th>Montant</th><th>Échéance</th><th></th></tr></thead><tbody>'+
+  (tranches.map((t,i)=>'<tr><td class="mono">'+(i+1)+'</td><td>'+t.label+'</td><td class="mono">'+t.montant.toLocaleString('fr-FR')+' F</td><td class="mono">'+(t.echeance||'—')+'</td>'+
+    '<td><button class="del-btn" onclick="deleteTranche(\''+t.id+'\')">Supprimer</button></td></tr>').join('') || '<tr><td colspan="5" class="empty">Aucune tranche définie — le "Frais total" manuel de l\'onglet Scolarité s\'applique.</td></tr>')+
+  (tranches.length ? '<tr><td colspan="2" style="font-weight:700;">Total</td><td class="mono" style="font-weight:700;">'+total.toLocaleString('fr-FR')+' F</td><td colspan="2"></td></tr>' : '')+
+  '</tbody></table></div>';
+}
+function addTranche(){
+  const label = document.getElementById('tc-label').value.trim();
+  const montant = Number(document.getElementById('tc-montant').value);
+  const echeance = document.getElementById('tc-echeance').value;
+  if(!label) return showToast('Indiquez un intitulé');
+  if(!montant) return showToast('Indiquez un montant');
+  const ordre = classTranches(ui.trancheClass).length + 1;
+  db.finance.tranches.push({ id: uid('tc'), classId: ui.trancheClass, year: db.school.year, label, montant, echeance, ordre });
+  saveData(); renderMain(); showToast('Tranche ajoutée');
+}
+function deleteTranche(id){
+  if(!confirm('Supprimer cette tranche ?')) return;
+  db.finance.tranches = db.finance.tranches.filter(t=>t.id!==id);
+  saveData(); renderMain();
+}
+
+/* ---------- RELANCES DE RETARD ---------- */
+function adminFinanceRelances(){
+  const enRetard = db.students.filter(s=>studentEnRetard(s.id, s.classId));
+  const historique = (db.finance.relances||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  return '<div class="panel"><div class="panel-head"><h3>'+learnerLabel(true,true)+' en retard de paiement</h3></div>'+
+  '<table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Classe</th><th>Reste dû</th><th>Parent</th><th></th></tr></thead><tbody>'+
+  (enRetard.map(stu=>{
+    const cls = db.classes.find(c=>c.id===stu.classId);
+    const reste = totalDuFor(stu.id, stu.classId) - paidFor(stu.id);
+    const parent = db.parents.find(p=>p.studentIds.includes(stu.id));
+    return '<tr><td><b>'+stu.name+'</b></td><td>'+(cls?cls.name:'')+'</td><td class="mono" style="color:var(--red);"><b>'+reste.toLocaleString('fr-FR')+' F</b></td>'+
+      '<td>'+(parent?parent.name:'<span style="color:var(--gray)">non lié</span>')+'</td>'+
+      '<td><button class="btn-xs" onclick="sendRelance(\''+stu.id+'\')">Envoyer une relance</button></td></tr>';
+  }).join('') || '<tr><td colspan="5" class="empty">Aucun retard de paiement pour le moment 🎉</td></tr>')+
+  '</tbody></table></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Historique des relances envoyées</h3></div>'+
+  '<table><thead><tr><th>Date</th><th>'+learnerLabel(true,false)+'</th><th>Montant dû au moment de la relance</th></tr></thead><tbody>'+
+  (historique.map(r=>'<tr><td class="mono">'+r.date+'</td><td>'+r.studentName+'</td><td class="mono">'+r.montantDu.toLocaleString('fr-FR')+' F</td></tr>').join('') || '<tr><td colspan="3" class="empty">Aucune relance envoyée.</td></tr>')+
+  '</tbody></table></div>';
+}
+function sendRelance(studentId){
+  const stu = db.students.find(s=>s.id===studentId);
+  if(!stu) return;
+  const parent = db.parents.find(p=>p.studentIds.includes(studentId));
+  const reste = totalDuFor(studentId, stu.classId) - paidFor(studentId);
+  const text = 'Relance de paiement — '+stu.name+' : un solde de '+reste.toLocaleString('fr-FR')+' F CFA reste dû sur les frais de scolarité. Merci de régulariser au plus tôt.';
+  if(parent){
+    const msg = { id:uid('mg'), from:'Administration', scope:'individuel', date: todayISO(), subject:'Relance de paiement — '+stu.name, body:text, classId:null, recipientType:'parent', recipientId:parent.id };
+    db.messages.push(msg);
+  }
+  db.finance.relances.push({ id: uid('rel'), studentId, studentName: stu.name, date: todayISO(), montantDu: reste });
+  saveData(); renderMain();
+  showToast(parent ? 'Relance envoyée au parent par messagerie' : 'Relance enregistrée (aucun parent lié — message non envoyé)');
+}
+
+/* ---------- SALAIRES DU PERSONNEL ---------- */
+function currentMonthKey(){ return todayISO().slice(0,7); }
+function salairePaidForMonth(personnelId, mois){
+  return db.finance.paiementsSalaires.some(p=>p.personnelId===personnelId && p.mois===mois);
+}
+function adminFinanceSalaires(){
+  const personnel = (db.finance.personnel||[]).filter(p=>p.actif!==false);
+  const mois = currentMonthKey();
+  const totalMensuel = personnel.reduce((s,p)=>s+p.salaireMensuel,0);
+  return '<div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">'+
+    '<div class="stat-card"><div class="n">'+personnel.length+'</div><div class="l">Membres du personnel</div></div>'+
+    '<div class="stat-card"><div class="n">'+totalMensuel.toLocaleString('fr-FR')+' F</div><div class="l">Masse salariale mensuelle</div></div>'+
+  '</div>'+
+  '<div class="panel"><div class="panel-head"><h3>Ajouter un membre du personnel</h3></div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Nom</label><input id="pe-nom" placeholder="Ex. M. Konan Yao"></div>'+
+    '<div class="f-group"><label>Poste</label><input id="pe-poste" placeholder="Ex. Comptable, Gardien, Professeur..."></div>'+
+    '<div class="f-group"><label>Salaire mensuel (F CFA)</label><input id="pe-salaire" type="number" placeholder="Ex. 120000"></div>'+
+    '<button class="btn-sm" onclick="addPersonnel()">Ajouter</button>'+
+  '</div></div>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>Nom</th><th>Poste</th><th>Salaire mensuel</th><th>'+mois+'</th><th></th></tr></thead><tbody>'+
+  (personnel.map(p=>{
+    const paye = salairePaidForMonth(p.id, mois);
+    const payForm = ui.paySalaireId===p.id ? '<tr><td colspan="5"><div class="form-grid">'+
+      '<div class="f-group"><label>Mois</label><input id="ps-mois" type="month" value="'+mois+'"></div>'+
+      '<div class="f-group"><label>Montant (F CFA)</label><input id="ps-montant" type="number" value="'+p.salaireMensuel+'"></div>'+
+      '<div class="f-group"><label>Date</label><input id="ps-date" type="date" value="'+todayISO()+'"></div>'+
+      '<div class="f-group"><label>Mode</label><select id="ps-mode"><option>Espèces</option><option>Mobile Money</option><option>Virement</option><option>Chèque</option></select></div>'+
+      '<button class="btn-sm" onclick="addPaiementSalaire(\''+p.id+'\')">Enregistrer le paiement</button>'+
+      '</div></td></tr>' : '';
+    return '<tr><td><b>'+p.nom+'</b></td><td>'+p.poste+'</td><td class="mono">'+p.salaireMensuel.toLocaleString('fr-FR')+' F</td>'+
+      '<td><span class="tag '+(paye?'green':'red')+'">'+(paye?'Payé':'Non payé')+'</span></td>'+
+      '<td style="display:flex;gap:4px;flex-wrap:wrap;">'+
+        '<button class="btn-xs" onclick="ui.paySalaireId=(ui.paySalaireId===\''+p.id+'\'?null:\''+p.id+'\');renderMain();">Payer</button>'+
+        '<button class="del-btn" onclick="removePersonnel(\''+p.id+'\')">Retirer</button>'+
+      '</td></tr>'+payForm;
+  }).join('') || '<tr><td colspan="5" class="empty">Aucun membre du personnel enregistré.</td></tr>')+
+  '</tbody></table></div>';
+}
+function addPersonnel(){
+  const nom = document.getElementById('pe-nom').value.trim();
+  const poste = document.getElementById('pe-poste').value.trim();
+  const salaireMensuel = Number(document.getElementById('pe-salaire').value);
+  if(!nom) return showToast('Indiquez un nom');
+  if(!salaireMensuel) return showToast('Indiquez un salaire mensuel');
+  db.finance.personnel.push({ id: uid('per'), nom, poste, salaireMensuel, actif:true });
+  saveData(); renderMain(); showToast('Membre du personnel ajouté');
+}
+function removePersonnel(id){
+  if(!confirm('Retirer ce membre du personnel de la liste active ?')) return;
+  const p = db.finance.personnel.find(x=>x.id===id);
+  if(p) p.actif = false;
+  saveData(); renderMain();
+}
+function addPaiementSalaire(personnelId){
+  const mois = document.getElementById('ps-mois').value || currentMonthKey();
+  const montant = Number(document.getElementById('ps-montant').value);
+  const date = document.getElementById('ps-date').value || todayISO();
+  const mode = document.getElementById('ps-mode').value;
+  if(!montant) return showToast('Indiquez un montant');
+  const p = db.finance.personnel.find(x=>x.id===personnelId);
+  db.finance.paiementsSalaires.push({ id: uid('psal'), personnelId, personnelNom: p?p.nom:'', mois, montant, date, mode });
+  db.finance.tresorerie.push({ id: uid('tr'), date, sens:'sortie', categorie:'salaire', tiers: p?p.nom:'', montant, description: 'Salaire '+mois+' — '+mode });
+  ui.paySalaireId = null;
+  saveData(); renderMain(); showToast('Salaire enregistré');
+}
+
+/* ---------- EXPORT FINANCIER (Excel) ---------- */
+function exportFinanceExcel(){
+  if(typeof XLSX === 'undefined'){ showToast('La bibliothèque Excel n\'a pas pu se charger — vérifiez la connexion internet'); return; }
+  const scolariteRows = db.students.map(s=>{
+    const cls = db.classes.find(c=>c.id===s.classId);
+    const total = totalDuFor(s.id, s.classId);
+    const paye = paidFor(s.id);
+    return { [learnerLabel(true,false)]: s.name, Classe: cls?cls.name:'', 'Frais total': total, Payé: paye, Reste: total-paye, 'En retard': studentEnRetard(s.id,s.classId)?'Oui':'Non' };
+  });
+  const tresorerieRows = db.finance.tresorerie.slice().sort((a,b)=>a.date.localeCompare(b.date)).map(e=>({
+    Date: e.date, Sens: e.sens==='entree'?'Entrée':'Sortie', Catégorie: categorieLabel(e.categorie), Tiers: e.tiers||'', Montant: e.montant, Description: e.description||''
+  }));
+  const salairesRows = db.finance.paiementsSalaires.slice().sort((a,b)=>a.mois.localeCompare(b.mois)).map(p=>({
+    Personnel: p.personnelNom, Mois: p.mois, Montant: p.montant, Date: p.date, Mode: p.mode
+  }));
+  const facturesRows = db.finance.factures.map(f=>({
+    Numéro: f.numero, Date: f.date, Destinataire: f.tiers, Montant: f.montant, Statut: f.statut==='payee'?'Payée':'Impayée', Description: f.description||''
+  }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(scolariteRows), 'Scolarité');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(tresorerieRows), 'Trésorerie');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(salairesRows), 'Salaires');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(facturesRows), 'Factures');
+  const safeName = (db.school.name||'ecole').replace(/[^a-zA-Z0-9]+/g,'-');
+  XLSX.writeFile(wb, 'Finances-'+safeName+'-'+(db.school.year||'').replace(/[^0-9]/g,'')+'.xlsx');
+  showToast('Export Excel généré');
+}
+
+/* ---------- FACTURES ---------- */
+function adminFinanceFactures(){
+  const factures = (db.finance.factures||[]).slice().reverse();
+  return '<div class="panel"><div class="panel-head"><h3>Nouvelle facture</h3></div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Destinataire</label><select id="fa-type" onchange="renderMain();">'+
+      '<option value="eleve" '+(ui.financeFactureType==='eleve'?'selected':'')+'>'+learnerLabel(true,false)+'</option>'+
+      '<option value="fournisseur" '+(ui.financeFactureType==='fournisseur'?'selected':'')+'>Fournisseur</option>'+
+      '<option value="partenaire" '+(ui.financeFactureType==='partenaire'?'selected':'')+'>Partenaire</option>'+
+      '<option value="client" '+(ui.financeFactureType==='client'?'selected':'')+'>Client</option>'+
+    '</select></div>'+
+    (ui.financeFactureType==='eleve' || ui.financeFactureType===undefined ?
+      '<div class="f-group"><label>'+learnerLabel(true,false)+'</label><select id="fa-student">'+db.students.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')+'</select></div>'
+      : '<div class="f-group"><label>Nom</label><input id="fa-tiers" placeholder="Ex. Librairie ABC"></div>'
+    )+
+    '<div class="f-group"><label>Montant (F CFA)</label><input id="fa-montant" type="number" placeholder="Ex. 25000"></div>'+
+    '<div class="f-group"><label>Date</label><input id="fa-date" type="date" value="'+todayISO()+'"></div>'+
+    '<div class="f-group"><label>Statut</label><select id="fa-statut"><option value="payee">Payée</option><option value="impayee">Impayée</option></select></div>'+
+  '</div>'+
+  '<div class="f-group" style="margin-top:10px;"><label>Description</label><textarea id="fa-desc" rows="2" placeholder="Ex. Fournitures scolaires 2ème trimestre"></textarea></div>'+
+  '<button class="btn-sm" style="margin-top:12px;" onclick="addFacture()">Créer la facture</button></div>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>N°</th><th>Date</th><th>Destinataire</th><th>Montant</th><th>Statut</th><th></th></tr></thead><tbody>'+
+  (factures.map(f=>'<tr><td class="mono">'+f.numero+'</td><td class="mono">'+f.date+'</td><td>'+f.tiers+'</td><td class="mono">'+f.montant.toLocaleString('fr-FR')+' F</td>'+
+    '<td><span class="tag '+(f.statut==='payee'?'green':'red')+'">'+(f.statut==='payee'?'Payée':'Impayée')+'</span></td>'+
+    '<td><button class="btn-xs" onclick="downloadFacturePDF(\''+f.id+'\')">PDF</button> <button class="del-btn" onclick="deleteFacture(\''+f.id+'\')">Supprimer</button></td></tr>').join('') || '<tr><td colspan="6" class="empty">Aucune facture créée.</td></tr>')+
+  '</tbody></table></div>';
+}
+function addFacture(){
+  const type = document.getElementById('fa-type').value;
+  ui.financeFactureType = type;
+  let tiers, studentId=null;
+  if(type==='eleve'){ studentId = document.getElementById('fa-student').value; tiers = nameOf(db.students, studentId); }
+  else{ tiers = document.getElementById('fa-tiers').value.trim(); if(!tiers) return showToast('Indiquez un nom'); }
+  const montant = Number(document.getElementById('fa-montant').value);
+  const date = document.getElementById('fa-date').value || todayISO();
+  const statut = document.getElementById('fa-statut').value;
+  const description = document.getElementById('fa-desc').value.trim();
+  if(!montant) return showToast('Indiquez un montant');
+  const numero = 'FA-'+String((db.finance.factures.length+1)).padStart(4,'0');
+  db.finance.factures.push({ id: uid('fac'), numero, type, studentId, tiers, montant, date, statut, description });
+  saveData(); renderMain(); showToast('Facture '+numero+' créée');
+}
+function deleteFacture(id){
+  if(!confirm('Supprimer cette facture ?')) return;
+  db.finance.factures = db.finance.factures.filter(f=>f.id!==id);
+  saveData(); renderMain();
+}
+function downloadFacturePDF(id){
+  const f = db.finance.factures.find(x=>x.id===id);
+  if(!f) return;
+  if(typeof window.jspdf === 'undefined'){ showToast('La bibliothèque PDF n\'a pas pu se charger'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  let y = 56;
+  doc.setFont('helvetica','bold'); doc.setFontSize(19); doc.setTextColor(27,42,74);
+  doc.text(db.school.name||'École', 40, y); y+=22;
+  doc.setFont('helvetica','normal'); doc.setFontSize(11); doc.setTextColor(107,107,99);
+  doc.text('Facture '+f.numero+' — '+f.date, 40, y); y+=32;
+  doc.autoTable({
+    startY:y,
+    head:[['Destinataire','Description','Montant','Statut']],
+    body:[[ f.tiers, f.description||'—', f.montant.toLocaleString('fr-FR')+' F', f.statut==='payee'?'Payée':'Impayée' ]],
+    styles:{fontSize:10.5}, headStyles:{fillColor:[27,42,74]}, margin:{left:40,right:40}
+  });
+  y = doc.lastAutoTable.finalY + 30;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(150,150,150);
+  doc.text('Kampusya — document généré le '+todayISO(), 40, doc.internal.pageSize.getHeight()-30);
+  doc.save('Facture-'+f.numero+'.pdf');
+}
+
+/* ---------- TRÉSORERIE ---------- */
+function adminFinanceTresorerie(){
+  const entries = (db.finance.tresorerie||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const totalEntrees = entries.filter(e=>e.sens==='entree').reduce((s,e)=>s+e.montant,0);
+  const totalSorties = entries.filter(e=>e.sens==='sortie').reduce((s,e)=>s+e.montant,0);
+  return '<div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">'+
+    '<div class="stat-card"><div class="n" style="color:var(--green);">'+totalEntrees.toLocaleString('fr-FR')+' F</div><div class="l">Total entrées</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--red);">'+totalSorties.toLocaleString('fr-FR')+' F</div><div class="l">Total sorties</div></div>'+
+    '<div class="stat-card"><div class="n">'+(totalEntrees-totalSorties).toLocaleString('fr-FR')+' F</div><div class="l">Solde</div></div>'+
+  '</div>'+
+  '<div class="panel"><div class="panel-head"><h3>Nouvelle opération</h3></div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Sens</label><select id="tr-sens"><option value="entree">Entrée</option><option value="sortie">Sortie</option></select></div>'+
+    '<div class="f-group"><label>Catégorie</label><select id="tr-cat"><option value="fournisseur">Fournisseur</option><option value="partenaire">Partenaire</option><option value="client">Client</option><option value="scolarite">Scolarité</option><option value="autre">Autre</option></select></div>'+
+    '<div class="f-group"><label>Tiers (nom)</label><input id="tr-tiers" placeholder="Ex. Librairie ABC"></div>'+
+    '<div class="f-group"><label>Montant (F CFA)</label><input id="tr-montant" type="number" placeholder="Ex. 30000"></div>'+
+    '<div class="f-group"><label>Date</label><input id="tr-date" type="date" value="'+todayISO()+'"></div>'+
+  '</div>'+
+  '<div class="f-group" style="margin-top:10px;"><label>Description</label><input id="tr-desc" placeholder="Ex. Achat de craies et cahiers"></div>'+
+  '<button class="btn-sm" style="margin-top:12px;" onclick="addTresorerie()">Enregistrer</button></div>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>Date</th><th>Sens</th><th>Catégorie</th><th>Tiers</th><th>Montant</th><th>Description</th><th></th></tr></thead><tbody>'+
+  (entries.map(e=>'<tr><td class="mono">'+e.date+'</td><td><span class="tag '+(e.sens==='entree'?'green':'red')+'">'+(e.sens==='entree'?'Entrée':'Sortie')+'</span></td>'+
+    '<td>'+categorieLabel(e.categorie)+'</td><td>'+(e.tiers||'—')+'</td><td class="mono">'+e.montant.toLocaleString('fr-FR')+' F</td><td>'+(e.description||'—')+'</td>'+
+    '<td><button class="del-btn" onclick="deleteTresorerie(\''+e.id+'\')">Supprimer</button></td></tr>').join('') || '<tr><td colspan="7" class="empty">Aucune opération enregistrée.</td></tr>')+
+  '</tbody></table></div>';
+}
+function categorieLabel(c){
+  return {fournisseur:'Fournisseur', partenaire:'Partenaire', client:'Client', scolarite:'Scolarité', autre:'Autre'}[c] || c;
+}
+function addTresorerie(){
+  const sens = document.getElementById('tr-sens').value;
+  const categorie = document.getElementById('tr-cat').value;
+  const tiers = document.getElementById('tr-tiers').value.trim();
+  const montant = Number(document.getElementById('tr-montant').value);
+  const date = document.getElementById('tr-date').value || todayISO();
+  const description = document.getElementById('tr-desc').value.trim();
+  if(!montant) return showToast('Indiquez un montant');
+  db.finance.tresorerie.push({ id: uid('tr'), date, sens, categorie, tiers, montant, description });
+  saveData(); renderMain(); showToast('Opération enregistrée');
+}
+function deleteTresorerie(id){
+  if(!confirm('Supprimer cette opération ?')) return;
+  db.finance.tresorerie = db.finance.tresorerie.filter(e=>e.id!==id);
+  saveData(); renderMain();
 }
 
 /* ---------- ADMIN: PROGRAMME (lecture seule) ---------- */
