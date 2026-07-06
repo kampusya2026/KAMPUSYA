@@ -287,7 +287,8 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            eleveCahierSubject:null, eleveProgSubject:null, eleveNotesSubject:null,
            bulletinClass:null, bulletinPeriode:null,
            financeTab:'scolarite', financeClassFilter:'', payScolariteId:null, financeFactureType:'eleve',
-           trancheClass:null, detailScolariteId:null, paySalaireId:null };
+           trancheClass:null, detailScolariteId:null, paySalaireId:null, relanceClassFilter:'',
+           manuelClass:null, manuelSubject:null, eleveManuelSubject:null };
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
@@ -298,7 +299,7 @@ function emptySchoolData(){
     school: { id: session.schoolId, name: '', year: '' },
     classes: [], subjects: [], profs: [], students: [], parents: [], schedule: [],
     attendance: [], grades: [], evals: [], journal: [],
-    events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [],
+    events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [], manuels: [],
     finance: { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [],
                tranches: [], personnel: [], paiementsSalaires: [], relances: [] }
   };
@@ -333,6 +334,7 @@ async function loadData(){
   if(!db.evals) db.evals=[]; if(!db.schedule) db.schedule=[]; if(!db.events) db.events=[];
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
+  if(!db.manuels) db.manuels=[];
   if(!db.finance) db.finance = { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [], tranches: [], personnel: [], paiementsSalaires: [], relances: [] };
   if(!db.finance.tranches) db.finance.tranches=[]; if(!db.finance.personnel) db.finance.personnel=[];
   if(!db.finance.paiementsSalaires) db.finance.paiementsSalaires=[]; if(!db.finance.relances) db.finance.relances=[];
@@ -467,15 +469,15 @@ async function logout(){
 const TABS = {
   admin:[ ['overview','Tableau de bord','#C9952C'], ['classes','Classes','#2F6B4F'], ['subjects','Matières','#1B2A4A'],
           ['schedule',"Emplois du temps",'#2F6B4F'], ['comptes','Comptes','#B23A33'], ['presences','Présences','#B23A33'],
-          ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['finances','Finances','#2F6B4F'], ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'],
+          ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['finances','Finances','#2F6B4F'], ['programme','Programme','#A87820'], ['manuel','Manuel','#1B2A4A'], ['agenda','Agenda','#1B2A4A'],
           ['comportement','Comportement','#A87820'], ['messagerie','Messagerie','#2E4271'], ['archives','Archives','#6B6B63'] ],
-  prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
+  prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
          ['programme','Programme annuel','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
          ['messagerie','Messages','#2E4271'] ],
-  eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['absences','Absences','#B23A33'], ['notes','Mes notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
+  eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['absences','Absences','#B23A33'], ['notes','Mes notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
           ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
           ['messagerie','Messages','#2E4271'] ],
-  parent:[ ['absences','Absences','#B23A33'], ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'],
+  parent:[ ['absences','Absences','#B23A33'], ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
            ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#A87820'], ['messagerie','Messages','#2E4271'] ],
   super:[ ['schools','Écoles partenaires','#C9952C'] ]
 };
@@ -551,6 +553,7 @@ function renderAdmin(){
   if(ui.adminTab==='bulletins') return adminBulletins();
   if(ui.adminTab==='finances') return adminFinances();
   if(ui.adminTab==='programme') return adminProgramme();
+  if(ui.adminTab==='manuel') return adminManuel();
   if(ui.adminTab==='agenda') return adminAgenda();
   if(ui.adminTab==='comportement') return adminComportement();
   if(ui.adminTab==='messagerie') return adminMessagerie();
@@ -782,21 +785,35 @@ function resizeImageFile(file, maxWidth){
     reader.readAsDataURL(file);
   });
 }
+async function saveSchoolBranding(updates){
+  const { data: { session: authSession } } = await sb.auth.getSession();
+  const requesterToken = authSession ? authSession.access_token : null;
+  try{
+    const res = await fetch('/.netlify/functions/update-school-branding', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ schoolId: session.schoolId, ...updates, requesterToken })
+    });
+    if(!res.ok){ showToast('Erreur : '+await res.text()); return false; }
+    return true;
+  }catch(e){ showToast('Erreur réseau'); return false; }
+}
 async function uploadSchoolImage(input, kind){
   const file = input.files[0];
   if(!file) return;
   if(file.size > 3*1024*1024){ showToast('Image trop lourde (max 3 Mo)'); return; }
   try{
     const dataUrl = await resizeImageFile(file, kind==='logo' ? 300 : 260);
+    const ok = await saveSchoolBranding({ [kind]: dataUrl });
+    if(!ok) return;
     db.school[kind] = dataUrl;
-    const { error } = await sb.from('schools').update({ [kind]: dataUrl }).eq('id', session.schoolId);
-    saveData(); renderMain();
+    renderMain();
     showToast(kind==='logo' ? 'Logo mis à jour' : 'Cachet/signature mis à jour');
   }catch(e){ showToast('Erreur lors du traitement de l\'image'); }
 }
-function removeSchoolImage(kind){
+async function removeSchoolImage(kind){
+  const ok = await saveSchoolBranding({ [kind]: null });
+  if(!ok) return;
   db.school[kind] = null;
-  sb.from('schools').update({ [kind]: null }).eq('id', session.schoolId);
   saveData(); renderMain();
 }
 function setPeriodeMode(mode){
@@ -1841,22 +1858,48 @@ function deleteTranche(id){
 
 /* ---------- RELANCES DE RETARD ---------- */
 function adminFinanceRelances(){
-  const enRetard = db.students.filter(s=>studentEnRetard(s.id, s.classId));
+  if(ui.relanceClassFilter===undefined) ui.relanceClassFilter='';
+  const visibleClasses = ui.relanceClassFilter ? db.classes.filter(c=>c.id===ui.relanceClassFilter) : db.classes;
+  const enRetard = db.students.filter(s=>visibleClasses.some(c=>c.id===s.classId) && studentEnRetard(s.id, s.classId));
   const historique = (db.finance.relances||[]).slice().sort((a,b)=>b.date.localeCompare(a.date));
-  return '<div class="panel"><div class="panel-head"><h3>'+learnerLabel(true,true)+' en retard de paiement</h3></div>'+
-  '<table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Classe</th><th>Reste dû</th><th>Parent</th><th></th></tr></thead><tbody>'+
+  const facturesImpayees = db.finance.factures.filter(f=>f.statut==='impayee' && f.type!=='eleve');
+  return '<div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">'+
+    '<div class="stat-card"><div class="n" style="color:var(--red);">'+enRetard.length+'</div><div class="l">'+learnerLabel(true,enRetard.length>1)+' en retard</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--red);">'+facturesImpayees.length+'</div><div class="l">Factures impayées</div></div>'+
+    '<div class="stat-card"><div class="n">'+historique.length+'</div><div class="l">Relances envoyées (total)</div></div>'+
+  '</div>'+
+  '<div class="selector-row"><select onchange="ui.relanceClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.relanceClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select>'+
+  (enRetard.length ? '<button class="btn-sm" onclick="sendAllRelances()">Envoyer une relance à tous ('+enRetard.length+')</button>' : '')+
+  '</div>'+
+  '<div class="panel"><div class="panel-head"><h3>'+learnerLabel(true,true)+' en retard de paiement</h3></div>'+
+  '<table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Classe</th><th>Reste dû</th><th>Parent</th><th>Relances envoyées</th><th></th></tr></thead><tbody>'+
   (enRetard.map(stu=>{
     const cls = db.classes.find(c=>c.id===stu.classId);
     const reste = totalDuFor(stu.id, stu.classId) - paidFor(stu.id);
     const parent = db.parents.find(p=>p.studentIds.includes(stu.id));
+    const relancesStu = db.finance.relances.filter(r=>r.studentId===stu.id).sort((a,b)=>b.date.localeCompare(a.date));
     return '<tr><td><b>'+stu.name+'</b></td><td>'+(cls?cls.name:'')+'</td><td class="mono" style="color:var(--red);"><b>'+reste.toLocaleString('fr-FR')+' F</b></td>'+
       '<td>'+(parent?parent.name:'<span style="color:var(--gray)">non lié</span>')+'</td>'+
-      '<td><button class="btn-xs" onclick="sendRelance(\''+stu.id+'\')">Envoyer une relance</button></td></tr>';
-  }).join('') || '<tr><td colspan="5" class="empty">Aucun retard de paiement pour le moment 🎉</td></tr>')+
+      '<td>'+(relancesStu.length ? '<span class="tag amber">'+relancesStu.length+'x</span> <span style="font-size:11.5px;color:var(--gray);">dernière le '+relancesStu[0].date+'</span>' : '<span style="color:var(--gray);font-size:12.5px;">Aucune</span>')+'</td>'+
+      '<td><button class="btn-xs" onclick="sendRelance(\''+stu.id+'\')">'+(relancesStu.length ? 'Relancer à nouveau' : 'Envoyer une relance')+'</button></td></tr>';
+  }).join('') || '<tr><td colspan="6" class="empty">Aucun retard de paiement pour le moment 🎉</td></tr>')+
   '</tbody></table></div>'+
-  '<div class="panel"><div class="panel-head"><h3>Historique des relances envoyées</h3></div>'+
-  '<table><thead><tr><th>Date</th><th>'+learnerLabel(true,false)+'</th><th>Montant dû au moment de la relance</th></tr></thead><tbody>'+
-  (historique.map(r=>'<tr><td class="mono">'+r.date+'</td><td>'+r.studentName+'</td><td class="mono">'+r.montantDu.toLocaleString('fr-FR')+' F</td></tr>').join('') || '<tr><td colspan="3" class="empty">Aucune relance envoyée.</td></tr>')+
+  '<div class="panel"><div class="panel-head"><h3>Factures impayées — fournisseurs, partenaires, clients</h3></div>'+
+  '<div class="sub" style="margin-bottom:10px;">Aucun contact n\'étant enregistré pour ces tiers, la relance se fait manuellement (téléphone, e-mail) — le bouton garde juste une trace de la date.</div>'+
+  '<table><thead><tr><th>N°</th><th>Type</th><th>Tiers</th><th>Montant</th><th>Date facture</th><th>Relances notées</th><th></th></tr></thead><tbody>'+
+  (facturesImpayees.map(f=>{
+    const relancesF = db.finance.relances.filter(r=>r.factureId===f.id).sort((a,b)=>b.date.localeCompare(a.date));
+    return '<tr><td class="mono">'+f.numero+'</td><td>'+categorieLabel(f.type)+'</td><td>'+f.tiers+'</td><td class="mono" style="color:var(--red);">'+f.montant.toLocaleString('fr-FR')+' F</td><td class="mono">'+f.date+'</td>'+
+    '<td>'+(relancesF.length ? '<span class="tag amber">'+relancesF.length+'x</span> <span style="font-size:11.5px;color:var(--gray);">dernière le '+relancesF[0].date+'</span>' : '<span style="color:var(--gray);font-size:12.5px;">Aucune</span>')+'</td>'+
+    '<td><button class="btn-xs" onclick="markFactureRelance(\''+f.id+'\')">'+(relancesF.length ? 'Noter une nouvelle relance' : 'Marquer comme relancé')+'</button></td></tr>';
+  }).join('') || '<tr><td colspan="7" class="empty">Aucune facture impayée.</td></tr>')+
+  '</tbody></table></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Historique des relances</h3></div>'+
+  '<table><thead><tr><th>Date</th><th>Concerné</th><th>Montant dû</th><th>Type</th></tr></thead><tbody>'+
+  (historique.map(r=>'<tr><td class="mono">'+r.date+'</td><td>'+r.studentName+'</td><td class="mono">'+r.montantDu.toLocaleString('fr-FR')+' F</td><td>'+(r.type==='facture'?'Facture':learnerLabel(true,false))+'</td></tr>').join('') || '<tr><td colspan="4" class="empty">Aucune relance envoyée.</td></tr>')+
   '</tbody></table></div>';
 }
 function sendRelance(studentId){
@@ -1866,12 +1909,36 @@ function sendRelance(studentId){
   const reste = totalDuFor(studentId, stu.classId) - paidFor(studentId);
   const text = 'Relance de paiement — '+stu.name+' : un solde de '+reste.toLocaleString('fr-FR')+' F CFA reste dû sur les frais de scolarité. Merci de régulariser au plus tôt.';
   if(parent){
-    const msg = { id:uid('mg'), from:'Administration', scope:'individuel', date: todayISO(), subject:'Relance de paiement — '+stu.name, body:text, classId:null, recipientType:'parent', recipientId:parent.id };
-    db.messages.push(msg);
+    db.messages.push({ id:uid('mg'), from:'Administration', scope:'individuel', date: todayISO(), subject:'Relance de paiement — '+stu.name, body:text, classId:null, recipientType:'parent', recipientId:parent.id });
   }
-  db.finance.relances.push({ id: uid('rel'), studentId, studentName: stu.name, date: todayISO(), montantDu: reste });
+  db.messages.push({ id:uid('mg'), from:'Administration', scope:'individuel', date: todayISO(), subject:'Relance de paiement', body:text, classId:null, recipientType:'eleve', recipientId:studentId });
+  db.finance.relances.push({ id: uid('rel'), studentId, studentName: stu.name, date: todayISO(), montantDu: reste, type:'eleve' });
   saveData(); renderMain();
-  showToast(parent ? 'Relance envoyée au parent par messagerie' : 'Relance enregistrée (aucun parent lié — message non envoyé)');
+  showToast(parent ? 'Relance envoyée à '+stu.name+' et au parent' : 'Relance envoyée à '+stu.name+' (aucun parent lié)');
+}
+function sendAllRelances(){
+  if(ui.relanceClassFilter===undefined) ui.relanceClassFilter='';
+  const visibleClasses = ui.relanceClassFilter ? db.classes.filter(c=>c.id===ui.relanceClassFilter) : db.classes;
+  const enRetard = db.students.filter(s=>visibleClasses.some(c=>c.id===s.classId) && studentEnRetard(s.id, s.classId));
+  if(!enRetard.length) return;
+  if(!confirm('Envoyer une relance à '+enRetard.length+' '+learnerLabel(false, enRetard.length>1)+' en retard (et à leurs parents liés) ?')) return;
+  enRetard.forEach(stu=>{
+    const parent = db.parents.find(p=>p.studentIds.includes(stu.id));
+    const reste = totalDuFor(stu.id, stu.classId) - paidFor(stu.id);
+    const text = 'Relance de paiement — '+stu.name+' : un solde de '+reste.toLocaleString('fr-FR')+' F CFA reste dû sur les frais de scolarité. Merci de régulariser au plus tôt.';
+    if(parent) db.messages.push({ id:uid('mg'), from:'Administration', scope:'individuel', date: todayISO(), subject:'Relance de paiement — '+stu.name, body:text, classId:null, recipientType:'parent', recipientId:parent.id });
+    db.messages.push({ id:uid('mg'), from:'Administration', scope:'individuel', date: todayISO(), subject:'Relance de paiement', body:text, classId:null, recipientType:'eleve', recipientId:stu.id });
+    db.finance.relances.push({ id: uid('rel'), studentId:stu.id, studentName: stu.name, date: todayISO(), montantDu: reste, type:'eleve' });
+  });
+  saveData(); renderMain();
+  showToast(enRetard.length+' relances envoyées');
+}
+function markFactureRelance(factureId){
+  const f = db.finance.factures.find(x=>x.id===factureId);
+  if(!f) return;
+  db.finance.relances.push({ id: uid('rel'), studentId:null, factureId:f.id, studentName: f.tiers+' ('+categorieLabel(f.type)+')', date: todayISO(), montantDu: f.montant, type:'facture' });
+  saveData(); renderMain();
+  showToast('Relance notée pour '+f.tiers);
 }
 
 /* ---------- SALAIRES DU PERSONNEL ---------- */
@@ -2371,6 +2438,7 @@ function renderProf(){
   if(ui.profTab==='appel') body = profAppel();
   if(ui.profTab==='notes') body = profNotes();
   if(ui.profTab==='cahier') body = profCahier();
+  if(ui.profTab==='manuel') body = profManuel();
   if(ui.profTab==='programme') body = profProgramme();
   if(ui.profTab==='agenda') body = agendaListHTML('prof', session.acctId);
   if(ui.profTab==='comportement') body = profComportement();
@@ -2568,6 +2636,79 @@ async function saveJournal(id){
 }
 function removeJournal(id){ db.journal = db.journal.filter(j=>j.id!==id); saveData(); renderMain(); }
 
+/* ============================================================
+   MANUEL — document complet de cours (par classe et matière)
+   ============================================================ */
+function classManuels(classId, subjectId){
+  return db.manuels.filter(m=>m.classId===classId && m.subjectId===subjectId).sort((a,b)=>b.uploadedAt.localeCompare(a.uploadedAt));
+}
+function profManuel(){
+  const manuels = classManuels(ui.profClass, ui.profSubject);
+  return '<div class="panel"><div class="panel-head"><h3>Ajouter un manuel</h3></div>'+
+  '<div class="sub" style="margin-bottom:12px;">Dépose ici le document complet du cours (support de cours, manuel, polycopié...) pour '+nameOf(db.classes,ui.profClass)+' — '+nameOf(db.subjects,ui.profSubject)+'. Les '+learnerLabel(false,true)+' et leurs parents pourront le consulter.</div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Titre du document</label><input id="ma-titre" placeholder="Ex. Cours complet — Les fractions"></div>'+
+    '<div class="f-group"><label>Fichier PDF</label><input type="file" id="ma-file" accept="application/pdf"></div>'+
+    '<button class="btn-sm" onclick="addManuel()">Publier</button>'+
+  '</div></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Manuels publiés</h3></div>'+
+  (manuels.map(m=>'<div class="entry"><div class="meta"><span>'+m.uploadedAt+'</span><span class="acts"><button class="del-btn" onclick="removeManuel(\''+m.id+'\')">Supprimer</button></span></div><h4>'+m.titre+'</h4>'+
+    '<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+m.filePath+'\')">📘 Ouvrir le document</button></p></div>').join('') || '<div class="empty">Aucun manuel publié pour cette classe et matière.</div>')+
+  '</div>';
+}
+async function addManuel(){
+  const titre = document.getElementById('ma-titre').value.trim();
+  const input = document.getElementById('ma-file');
+  const file = input.files[0];
+  if(!titre) return showToast('Indiquez un titre');
+  if(!file) return showToast('Choisissez un fichier PDF');
+  if(file.type !== 'application/pdf'){ showToast('Seuls les fichiers PDF sont acceptés'); return; }
+  if(file.size > 20*1024*1024){ showToast('Fichier trop lourd (max 20 Mo)'); return; }
+  const path = session.schoolId+'/manuels/'+ui.profClass+'/'+ui.profSubject+'/'+uid('man')+'.pdf';
+  const { error } = await sb.storage.from('course-files').upload(path, file, { contentType:'application/pdf' });
+  if(error){ showToast('Erreur de téléversement : '+error.message); return; }
+  db.manuels.push({ id: uid('manl'), classId: ui.profClass, subjectId: ui.profSubject, profId: session.acctId, titre, filePath: path, uploadedAt: todayISO() });
+  saveData(); renderMain(); showToast('Manuel publié');
+}
+function removeManuel(id){
+  if(!confirm('Supprimer ce manuel ?')) return;
+  db.manuels = db.manuels.filter(m=>m.id!==id);
+  saveData(); renderMain();
+}
+function adminManuel(){
+  if(!ui.manuelClass && db.classes.length) ui.manuelClass = db.classes[0].id;
+  if(!ui.manuelSubject && db.subjects.length) ui.manuelSubject = db.subjects[0].id;
+  const manuels = classManuels(ui.manuelClass, ui.manuelSubject);
+  return '<div class="page-head"><div><h1>Manuel</h1><div class="sub">Documents complets de cours publiés par les '+teacherGenericLabel(false)+'s</div></div></div>'+
+  '<div class="selector-row">'+
+    '<select onchange="ui.manuelClass=this.value; renderMain();">'+db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.manuelClass?'selected':'')+'>'+c.name+'</option>').join('')+'</select>'+
+    '<select onchange="ui.manuelSubject=this.value; renderMain();">'+db.subjects.map(s=>'<option value="'+s.id+'" '+(s.id===ui.manuelSubject?'selected':'')+'>'+s.name+'</option>').join('')+'</select>'+
+  '</div>'+
+  '<div class="panel">'+
+  (manuels.map(m=>{
+    const prof = db.profs.find(p=>p.id===m.profId);
+    return '<div class="entry"><div class="meta"><span>'+m.uploadedAt+(prof?' · '+prof.name:'')+'</span></div><h4>'+m.titre+'</h4>'+
+    '<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+m.filePath+'\')">📘 Ouvrir le document</button></p></div>';
+  }).join('') || '<div class="empty">Aucun manuel publié pour cette classe et matière.</div>')+
+  '</div>';
+}
+function eleveManuel(stu){
+  const subjectsWithManuels = db.subjects.filter(s=>db.manuels.some(m=>m.classId===stu.classId && m.subjectId===s.id));
+  if(ui.eleveManuelSubject===null && subjectsWithManuels.length) ui.eleveManuelSubject = subjectsWithManuels[0].id;
+  const manuels = db.manuels.filter(m=>m.classId===stu.classId && (!ui.eleveManuelSubject || m.subjectId===ui.eleveManuelSubject)).sort((a,b)=>b.uploadedAt.localeCompare(a.uploadedAt));
+  return '<div class="selector-row"><select onchange="ui.eleveManuelSubject=this.value; renderMain();">'+
+    '<option value="">Toutes les matières</option>'+
+    subjectsWithManuels.map(s=>'<option value="'+s.id+'" '+(s.id===ui.eleveManuelSubject?'selected':'')+'>'+s.name+'</option>').join('')+
+  '</select></div>'+
+  '<div class="panel">'+
+  (manuels.map(m=>{
+    const sub = db.subjects.find(s=>s.id===m.subjectId);
+    return '<div class="entry"><div class="meta"><span>'+m.uploadedAt+' · '+(sub?sub.name:'')+'</span></div><h4>'+m.titre+'</h4>'+
+    '<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+m.filePath+'\')">📘 Ouvrir le document</button></p></div>';
+  }).join('') || '<div class="empty">Aucun manuel publié pour le moment.</div>')+
+  '</div>';
+}
+
 function profProgramme(){
   const items = db.programme.filter(p=>p.classId===ui.profClass && p.subjectId===ui.profSubject);
   return '<div class="panel"><div class="panel-head"><h3>Ajouter un chapitre</h3></div>'+
@@ -2666,6 +2807,7 @@ function renderEleve(){
   if(ui.eleveTab==='notes') body = eleveNotes(stu);
   if(ui.eleveTab==='bulletins') body = eleveBulletins(stu);
   if(ui.eleveTab==='cahier') body = eleveCahierBody(stu);
+  if(ui.eleveTab==='manuel') body = eleveManuel(stu);
   if(ui.eleveTab==='programme') body = eleveProgramme(stu);
   if(ui.eleveTab==='agenda') body = agendaListHTML('eleve', session.acctId);
   if(ui.eleveTab==='comportement') body = eleveComportement(stu);
@@ -2785,6 +2927,7 @@ function renderParent(){
   if(ui.parentTab==='notes') body = parentNotes(child);
   if(ui.parentTab==='bulletins') body = eleveBulletins(child);
   if(ui.parentTab==='cahier') body = parentCahierBody(child);
+  if(ui.parentTab==='manuel') body = eleveManuel(child);
   if(ui.parentTab==='agenda') body = agendaListHTML('parent', session.acctId);
   if(ui.parentTab==='comportement') body = parentComportement(child);
   if(ui.parentTab==='messagerie') body = inboxHTML('parent', session.acctId);
