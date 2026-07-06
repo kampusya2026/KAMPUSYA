@@ -328,7 +328,8 @@ async function loadData(){
   const { data: row } = await sb.from('school_data').select('data').eq('school_id', session.schoolId).maybeSingle();
   db = (row && row.data && Object.keys(row.data).length) ? row.data : emptySchoolData();
   db.school = { ...db.school, id: session.schoolId, name: school ? school.name : '', year: school ? school.year : '', type: school ? school.type : '',
-    plan: school ? school.plan : '', status: school ? school.status : '', nextDue: school ? school.next_due : '' };
+    plan: school ? school.plan : '', status: school ? school.status : '', nextDue: school ? school.next_due : '',
+    logo: school ? school.logo : null, signature: school ? school.signature : null };
   if(!db.evals) db.evals=[]; if(!db.schedule) db.schedule=[]; if(!db.events) db.events=[];
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
@@ -575,6 +576,16 @@ function adminOverview(){
     '<button class="btn-sm ghost" onclick="payViaPayDunya(\'annuel\')">Payer 1 an</button>'+
   '</div>' : '<div class="empty">Contactez l\'administration Kampusya pour choisir une formule payante.</div>')+
   '</div>'+
+  '<div class="panel"><div class="panel-head"><h3>Identité de l\'établissement</h3></div>'+
+  '<div class="sub" style="margin-bottom:14px;">Le logo et le cachet/signature apparaîtront sur les bulletins et les factures générés.</div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Logo de l\'école</label><input type="file" id="school-logo-input" accept="image/*" onchange="uploadSchoolImage(this,\'logo\')">'+
+      (db.school.logo ? '<div style="margin-top:8px;"><img src="'+db.school.logo+'" style="height:44px;border-radius:6px;border:1px solid var(--line);"> <button class="del-btn" onclick="removeSchoolImage(\'logo\')">Retirer</button></div>' : '')+
+    '</div>'+
+    '<div class="f-group"><label>Cachet / signature du représentant</label><input type="file" id="school-signature-input" accept="image/*" onchange="uploadSchoolImage(this,\'signature\')">'+
+      (db.school.signature ? '<div style="margin-top:8px;"><img src="'+db.school.signature+'" style="height:44px;border-radius:6px;border:1px solid var(--line);"> <button class="del-btn" onclick="removeSchoolImage(\'signature\')">Retirer</button></div>' : '')+
+    '</div>'+
+  '</div></div>'+
   '<div class="panel"><div class="panel-head"><h3>Organisation de l\'année scolaire</h3></div>'+
   '<div class="sub" style="margin-bottom:10px;">Choisissez comment votre établissement découpe l\'année — cela détermine les périodes proposées lors de la création des évaluations et pour le calcul des moyennes.</div>'+
   '<div class="chips">'+
@@ -749,6 +760,44 @@ async function payViaPayDunya(duration){
     const result = await res.json();
     window.location.href = result.url;
   }catch(e){ showToast('Erreur réseau — impossible de contacter PayDunya'); }
+}
+function resizeImageFile(file, maxWidth){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function uploadSchoolImage(input, kind){
+  const file = input.files[0];
+  if(!file) return;
+  if(file.size > 3*1024*1024){ showToast('Image trop lourde (max 3 Mo)'); return; }
+  try{
+    const dataUrl = await resizeImageFile(file, kind==='logo' ? 300 : 260);
+    db.school[kind] = dataUrl;
+    const { error } = await sb.from('schools').update({ [kind]: dataUrl }).eq('id', session.schoolId);
+    saveData(); renderMain();
+    showToast(kind==='logo' ? 'Logo mis à jour' : 'Cachet/signature mis à jour');
+  }catch(e){ showToast('Erreur lors du traitement de l\'image'); }
+}
+function removeSchoolImage(kind){
+  db.school[kind] = null;
+  sb.from('schools').update({ [kind]: null }).eq('id', session.schoolId);
+  saveData(); renderMain();
 }
 function setPeriodeMode(mode){
   db.school.periodeMode = mode;
@@ -1544,11 +1593,17 @@ function generateBulletinPDF(b){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:'pt', format:'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
   let y = 56;
+  const textStartX = db.school.logo ? 100 : 40;
+  if(db.school.logo){
+    try{ doc.addImage(db.school.logo, 'PNG', 40, 36, 50, 50); }catch(e){}
+  }
   doc.setFont('helvetica','bold'); doc.setFontSize(19); doc.setTextColor(27,42,74);
-  doc.text(db.school.name || 'École', 40, y); y += 22;
+  doc.text(db.school.name || 'École', textStartX, y); y += 22;
   doc.setFont('helvetica','normal'); doc.setFontSize(11); doc.setTextColor(107,107,99);
-  doc.text('Bulletin de notes — '+b.periode+' — Année '+b.year, 40, y); y += 32;
+  doc.text('Bulletin de notes — '+b.periode+' — Année '+b.year, textStartX, y); y += 24;
+  y = Math.max(y, 100);
 
   doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(27,42,74);
   doc.text(b.studentName, 40, y); y += 16;
@@ -1577,8 +1632,16 @@ function generateBulletinPDF(b){
     doc.text(lines, 40, y); y += lines.length*13 + 10;
   }
 
+  // Cachet / signature du représentant de l'école
+  if(db.school.signature){
+    const sigY = Math.max(y+10, pageHeight-160);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(107,107,99);
+    doc.text('Cachet et signature du responsable', pageWidth-200, sigY);
+    try{ doc.addImage(db.school.signature, 'PNG', pageWidth-200, sigY+8, 130, 80); }catch(e){}
+  }
+
   doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(150,150,150);
-  doc.text('Publié le '+b.publishedAt+' — Kampusya', 40, doc.internal.pageSize.getHeight()-30);
+  doc.text('Publié le '+b.publishedAt+' — Kampusya', 40, pageHeight-30);
 
   const safeName = (b.studentName||'bulletin').replace(/[^a-zA-Z0-9]+/g,'-');
   doc.save('Bulletin-'+safeName+'-'+b.periode.replace(/\s+/g,'')+'.pdf');
@@ -1960,11 +2023,18 @@ function downloadFacturePDF(id){
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:'pt', format:'a4' });
   const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
   let y = 56;
+  const textStartX = db.school.logo ? 100 : 40;
+  if(db.school.logo){
+    try{ doc.addImage(db.school.logo, 'PNG', 40, 36, 50, 50); }catch(e){}
+  }
   doc.setFont('helvetica','bold'); doc.setFontSize(19); doc.setTextColor(27,42,74);
-  doc.text(db.school.name||'École', 40, y); y+=22;
+  doc.text(db.school.name||'École', textStartX, y); y+=22;
   doc.setFont('helvetica','normal'); doc.setFontSize(11); doc.setTextColor(107,107,99);
-  doc.text('Facture '+f.numero+' — '+f.date, 40, y); y+=32;
+  doc.text('Facture '+f.numero+' — '+f.date, textStartX, y); y+=24;
+  y = Math.max(y, 100);
+
   doc.autoTable({
     startY:y,
     head:[['Destinataire','Description','Montant','Statut']],
@@ -1972,8 +2042,16 @@ function downloadFacturePDF(id){
     styles:{fontSize:10.5}, headStyles:{fillColor:[27,42,74]}, margin:{left:40,right:40}
   });
   y = doc.lastAutoTable.finalY + 30;
+
+  if(db.school.signature){
+    const sigY = Math.max(y+10, pageHeight-160);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(107,107,99);
+    doc.text('Cachet et signature du responsable', pageWidth-200, sigY);
+    try{ doc.addImage(db.school.signature, 'PNG', pageWidth-200, sigY+8, 130, 80); }catch(e){}
+  }
+
   doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(150,150,150);
-  doc.text('Kampusya — document généré le '+todayISO(), 40, doc.internal.pageSize.getHeight()-30);
+  doc.text('Kampusya — document généré le '+todayISO(), 40, pageHeight-30);
   doc.save('Facture-'+f.numero+'.pdf');
 }
 
@@ -2100,7 +2178,8 @@ function removeEvent(id){ db.events = db.events.filter(e=>e.id!==id); saveData()
 
 /* ---------- ADMIN: COMPORTEMENT ---------- */
 function adminComportement(){
-  const entries = db.behavior.slice().sort((a,b)=>b.date.localeCompare(a.date));
+  if(ui.comportAdminClassFilter===undefined) ui.comportAdminClassFilter='';
+  const entries = db.behavior.filter(b=>!ui.comportAdminClassFilter || b.classId===ui.comportAdminClassFilter).slice().sort((a,b)=>b.date.localeCompare(a.date));
   return '<div class="page-head"><div><h1>Suivi du comportement</h1><div class="sub">Informez les familles en temps réel ; chaque entrée est visée par le parent</div></div></div>'+
   '<div class="panel"><div class="panel-head"><h3>Nouvelle entrée</h3></div>'+
   '<div class="form-grid">'+
@@ -2110,6 +2189,10 @@ function adminComportement(){
   '</div>'+
   '<div class="f-group" style="margin-top:10px;"><label>Motif</label><textarea id="cp-motif" rows="2" placeholder="Ex. Participation remarquable en classe"></textarea></div>'+
   '<button class="btn-sm" style="margin-top:12px;" onclick="addBehavior(\'Administration\')">Publier</button></div>'+
+  '<div class="selector-row"><select onchange="ui.comportAdminClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.comportAdminClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select></div>'+
   '<div class="panel"><table><thead><tr><th>Date</th><th>Élève</th><th>Type</th><th>Motif</th><th>Auteur</th><th>Visa parent</th></tr></thead><tbody>'+
   (entries.map(b=>{
     const stu = db.students.find(s=>s.id===b.studentId);
@@ -2432,32 +2515,55 @@ function setGrade(evalId, studentId, value){
 function profCahier(){
   const entries = db.journal.filter(j=>j.classId===ui.profClass && j.subjectId===ui.profSubject).slice().reverse();
   const editing = ui.editJournalId;
+  const editingEntry = editing ? journalById(editing) : null;
   return '<div class="panel"><div class="panel-head"><h3>'+(editing?'Modifier l\'entrée':'Nouvelle entrée')+'</h3></div>'+
-  '<div class="form-grid" style="grid-template-columns:1fr 1fr;"><div class="f-group"><label>Date</label><input id="cd-date" type="date" value="'+(editing?journalById(editing).date:todayISO())+'"></div><div class="f-group"></div></div>'+
-  '<div class="f-group" style="margin-top:10px;"><label>Contenu du cours</label><textarea id="cd-content" rows="2" placeholder="Ex. Chapitre 4 — Les fractions, exercices 1 à 6">'+(editing?journalById(editing).contenu:'')+'</textarea></div>'+
-  '<div class="f-group" style="margin-top:10px;"><label>Devoirs à faire (optionnel)</label><textarea id="cd-devoirs" rows="2" placeholder="Ex. Exercices 7-10 page 56 pour le 12/03">'+(editing?(journalById(editing).devoirs||''):'')+'</textarea></div>'+
+  '<div class="form-grid" style="grid-template-columns:1fr 1fr;"><div class="f-group"><label>Date</label><input id="cd-date" type="date" value="'+(editing?editingEntry.date:todayISO())+'"></div><div class="f-group"></div></div>'+
+  '<div class="f-group" style="margin-top:10px;"><label>Contenu du cours</label><textarea id="cd-content" rows="2" placeholder="Ex. Chapitre 4 — Les fractions, exercices 1 à 6">'+(editing?editingEntry.contenu:'')+'</textarea></div>'+
+  '<div class="f-group" style="margin-top:10px;"><label>Devoirs à faire (optionnel)</label><textarea id="cd-devoirs" rows="2" placeholder="Ex. Exercices 7-10 page 56 pour le 12/03">'+(editing?(editingEntry.devoirs||''):'')+'</textarea></div>'+
+  '<div class="f-group" style="margin-top:10px;"><label>Cours en PDF (optionnel)</label><input type="file" id="cd-file" accept="application/pdf">'+
+    (editing && editingEntry.filePath ? '<div style="margin-top:6px;font-size:12.5px;">📄 Un fichier est déjà joint — <button class="btn-xs" onclick="openCourseFile(\''+editingEntry.filePath+'\')" type="button">le voir</button> ou choisis-en un nouveau ci-dessus pour le remplacer.</div>' : '')+
+  '</div>'+
   '<div style="margin-top:12px;display:flex;gap:8px;">'+
   (editing ? '<button class="btn-sm" onclick="saveJournal(\''+editing+'\')">Enregistrer</button><button class="btn-sm ghost" onclick="ui.editJournalId=null;renderMain();">Annuler</button>'
            : '<button class="btn-sm" onclick="addJournal()">Publier</button>')+
   '</div></div>'+
   '<div class="panel"><div class="panel-head"><h3>Historique</h3></div>'+
-  (entries.map(j=>'<div class="entry"><div class="meta"><span>'+j.date+'</span><span class="acts"><button class="edit-btn" onclick="ui.editJournalId=\''+j.id+'\';renderMain();">Modifier</button><button class="del-btn" onclick="removeJournal(\''+j.id+'\')">Supprimer</button></span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+'</div>').join('') || '<div class="empty">Aucune entrée pour cette classe.</div>')+
+  (entries.map(j=>'<div class="entry"><div class="meta"><span>'+j.date+'</span><span class="acts"><button class="edit-btn" onclick="ui.editJournalId=\''+j.id+'\';renderMain();">Modifier</button><button class="del-btn" onclick="removeJournal(\''+j.id+'\')">Supprimer</button></span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+(j.filePath?'<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+j.filePath+'\')">📄 Voir le cours (PDF)</button></p>':'')+'</div>').join('') || '<div class="empty">Aucune entrée pour cette classe.</div>')+
   '</div>';
 }
 function journalById(id){ return db.journal.find(j=>j.id===id); }
-function addJournal(){
+async function uploadCourseFile(){
+  const input = document.getElementById('cd-file');
+  const file = input && input.files[0];
+  if(!file) return null;
+  if(file.type !== 'application/pdf'){ showToast('Seuls les fichiers PDF sont acceptés'); return null; }
+  if(file.size > 15*1024*1024){ showToast('Fichier trop lourd (max 15 Mo)'); return null; }
+  const path = session.schoolId+'/'+ui.profClass+'/'+ui.profSubject+'/'+uid('crs')+'.pdf';
+  const { error } = await sb.storage.from('course-files').upload(path, file, { contentType:'application/pdf' });
+  if(error){ showToast('Erreur de téléversement : '+error.message); return null; }
+  return path;
+}
+async function openCourseFile(path){
+  const { data, error } = await sb.storage.from('course-files').createSignedUrl(path, 3600);
+  if(error || !data){ showToast('Impossible d\'ouvrir ce fichier'); return; }
+  window.open(data.signedUrl, '_blank');
+}
+async function addJournal(){
   const date = document.getElementById('cd-date').value || todayISO();
   const contenu = document.getElementById('cd-content').value.trim();
   const devoirs = document.getElementById('cd-devoirs').value.trim();
   if(!contenu) return showToast('Décrivez le contenu du cours');
-  db.journal.push({id:uid('j'), classId:ui.profClass, subjectId:ui.profSubject, date, contenu, devoirs});
+  const filePath = await uploadCourseFile();
+  db.journal.push({id:uid('j'), classId:ui.profClass, subjectId:ui.profSubject, date, contenu, devoirs, filePath});
   saveData(); renderMain(); showToast('Cahier de texte mis à jour');
 }
-function saveJournal(id){
+async function saveJournal(id){
   const j = journalById(id);
   j.date = document.getElementById('cd-date').value || j.date;
   j.contenu = document.getElementById('cd-content').value.trim() || j.contenu;
   j.devoirs = document.getElementById('cd-devoirs').value.trim();
+  const newFilePath = await uploadCourseFile();
+  if(newFilePath) j.filePath = newFilePath;
   ui.editJournalId = null; saveData(); renderMain(); showToast('Entrée modifiée');
 }
 function removeJournal(id){ db.journal = db.journal.filter(j=>j.id!==id); saveData(); renderMain(); }
@@ -2494,8 +2600,9 @@ function removeProgramme(id){ db.programme = db.programme.filter(p=>p.id!==id); 
 function profComportement(){
   const prof = profSelf();
   if(!ui.comportClass || !prof.classIds.includes(ui.comportClass)) ui.comportClass = prof.classIds[0] || null;
+  if(ui.comportHistoryFilter===undefined) ui.comportHistoryFilter='';
   const classStudents = db.students.filter(s=>s.classId===ui.comportClass);
-  const entries = db.behavior.filter(b=>prof.classIds.includes(b.classId) && b.author===prof.name).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const entries = db.behavior.filter(b=>prof.classIds.includes(b.classId) && b.author===prof.name && (!ui.comportHistoryFilter || b.classId===ui.comportHistoryFilter)).slice().sort((a,b)=>b.date.localeCompare(a.date));
   return '<div class="panel"><div class="panel-head"><h3>Signaler un comportement</h3></div>'+
   '<div class="form-grid">'+
   '<div class="f-group"><label>Classe</label><select id="cp-class" onchange="ui.comportClass=this.value; renderMain();">'+prof.classIds.map(cid=>{const c=db.classes.find(x=>x.id===cid); return c?'<option value="'+c.id+'" '+(c.id===ui.comportClass?'selected':'')+'>'+c.name+'</option>':'';}).join('')+'</select></div>'+
@@ -2504,6 +2611,10 @@ function profComportement(){
   '<div class="f-group"><label>Date</label><input id="cp-date" type="date" value="'+todayISO()+'"></div></div>'+
   '<div class="f-group" style="margin-top:10px;"><label>Motif</label><textarea id="cp-motif" rows="2"></textarea></div>'+
   '<button class="btn-sm" style="margin-top:12px;" onclick="addBehavior(\''+prof.name+'\')">Publier — la famille sera informée</button></div>'+
+  '<div class="selector-row"><select onchange="ui.comportHistoryFilter=this.value; renderMain();">'+
+    '<option value="">Toutes mes classes</option>'+
+    prof.classIds.map(cid=>{const c=db.classes.find(x=>x.id===cid); return c?'<option value="'+c.id+'" '+(c.id===ui.comportHistoryFilter?'selected':'')+'>'+c.name+'</option>':'';}).join('')+
+  '</select></div>'+
   '<div class="panel"><div class="panel-head"><h3>Mes signalements</h3></div><table><thead><tr><th>Date</th><th>Élève</th><th>Type</th><th>Motif</th><th>Visa parent</th></tr></thead><tbody>'+
   (entries.map(b=>{
     const stu = db.students.find(s=>s.id===b.studentId);
@@ -2745,7 +2856,7 @@ function parentCahierBody(child){
   return '<div class="panel">'+
     (entries.map(j=>{
       const sub = db.subjects.find(s=>s.id===j.subjectId);
-      return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+'</div>';
+      return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+(j.filePath?'<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+j.filePath+'\')">📄 Voir le cours (PDF)</button></p>':'')+'</div>';
     }).join('') || '<div class="empty">Aucune entrée pour le moment.</div>')+
   '</div>';
 }
@@ -2760,7 +2871,7 @@ function eleveCahierBody(stu){
   '<div class="panel">'+
     (entries.map(j=>{
       const sub = db.subjects.find(s=>s.id===j.subjectId);
-      return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+'</div>';
+      return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+(j.filePath?'<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+j.filePath+'\')">📄 Voir le cours (PDF)</button></p>':'')+'</div>';
     }).join('') || '<div class="empty">Aucune entrée pour le moment.</div>')+
   '</div>';
 }
