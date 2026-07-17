@@ -574,9 +574,9 @@ function adminOverview(){
     (db.school.status==='actif'?'Actif':db.school.status==='essai'?'Essai':'Suspendu')+'</span></div>'+
   '<div class="sub" style="margin-bottom:14px;">Formule '+(PLANS[db.school.plan]?PLANS[db.school.plan].label:db.school.plan)+
     (db.school.nextDue?' — prochaine échéance le '+db.school.nextDue:'')+'</div>'+
-  (PLANS[db.school.plan] && db.school.plan!=='essai' ? '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+
-    '<button class="btn-sm" onclick="payViaPayDunya(\'mensuel\')">Payer 1 mois — '+PLANS[db.school.plan].monthly.toLocaleString('fr-FR')+' F</button>'+
-    '<button class="btn-sm ghost" onclick="payViaPayDunya(\'annuel\')">Payer 1 an</button>'+
+  (PLANS[db.school.plan] && db.school.plan!=='essai' ? '<div>'+
+    '<a href="'+DJAMO_PAYMENT_LINK+'" target="_blank" rel="noopener" class="btn-sm" style="display:inline-block;text-decoration:none;">Payer '+PLANS[db.school.plan].monthly.toLocaleString('fr-FR')+' F via Djamo</a>'+
+    '<div class="sub" style="margin-top:10px;">Le lien ouvre la page de paiement Djamo (Mobile Money, carte). Une fois le paiement effectué, transmets une preuve à l\'administration Kampusya pour la mise à jour de ton abonnement.</div>'+
   '</div>' : '<div class="empty">Contactez l\'administration Kampusya pour choisir une formule payante.</div>')+
   '</div>'+
   '<div class="panel"><div class="panel-head"><h3>Identité de l\'établissement</h3></div>'+
@@ -736,33 +736,12 @@ function exportArchiveExcel(idx){
   XLSX.writeFile(wb, 'Archive-'+safeName+'-'+a.year.replace(/[^0-9]/g,'')+'.xlsx');
   showToast('Archive exportée');
 }
-async function generatePayDunyaLink(schoolId, duration){
-  showToast('Génération du lien de paiement...');
-  const { data: { session: authSession } } = await sb.auth.getSession();
-  const requesterToken = authSession ? authSession.access_token : null;
-  try{
-    const res = await fetch('/.netlify/functions/create-paydunya-invoice', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ schoolId, duration, requesterToken })
-    });
-    if(!res.ok){ showToast('Erreur : '+await res.text()); return; }
-    const result = await res.json();
-    prompt('Lien de paiement PayDunya ('+(duration==='annuel'?'1 an':'1 mois')+', '+result.amount.toLocaleString('fr-FR')+' F) — copie-le pour le transmettre à l\'école :', result.url);
-  }catch(e){ showToast('Erreur réseau — impossible de contacter PayDunya'); }
-}
-async function payViaPayDunya(duration){
-  showToast('Préparation du paiement...');
-  const { data: { session: authSession } } = await sb.auth.getSession();
-  const requesterToken = authSession ? authSession.access_token : null;
-  try{
-    const res = await fetch('/.netlify/functions/create-paydunya-invoice', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ schoolId: session.schoolId, duration, requesterToken })
-    });
-    if(!res.ok){ showToast('Erreur : '+await res.text()); return; }
-    const result = await res.json();
-    window.location.href = result.url;
-  }catch(e){ showToast('Erreur réseau — impossible de contacter PayDunya'); }
+// Paiement via lien Djamo Business — pas d'API, pas de webhook : la
+// confirmation et la réactivation du compte restent manuelles (Super Admin,
+// panneau "Paiement"), comme pour un virement ou un dépôt Mobile Money classique.
+const DJAMO_PAYMENT_LINK = 'https://pay.djamo.com/qbe3o';
+function promptDjamoLink(schoolName){
+  prompt('Lien de paiement Djamo à transmettre à '+schoolName+' :', DJAMO_PAYMENT_LINK);
 }
 function resizeImageFile(file, maxWidth){
   return new Promise((resolve, reject)=>{
@@ -3116,9 +3095,8 @@ function schoolsAdmin(){
       '<div class="f-group"><label>Nouvelle échéance</label><input id="pay-due" type="date" value="'+s.nextDue+'"></div>'+
       '<button class="btn-sm" onclick="recordPayment(\''+s.id+'\')">Enregistrer — réactive l\'accès</button>'+
       '</div>'+
-      (plan!=='essai' ? '<div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">'+
-        '<button class="btn-xs" onclick="generatePayDunyaLink(\''+s.id+'\',\'mensuel\')">Générer un lien PayDunya (1 mois)</button>'+
-        '<button class="btn-xs" onclick="generatePayDunyaLink(\''+s.id+'\',\'annuel\')">Générer un lien PayDunya (1 an)</button>'+
+      (plan!=='essai' ? '<div style="margin-top:12px;">'+
+        '<button class="btn-xs" onclick="promptDjamoLink(\''+s.name.replace(/'/g,"\\'")+'\')">Partager le lien de paiement Djamo</button>'+
       '</div>' : '')+
       (s.payments.length ? '<div style="margin-top:12px;"><table><thead><tr><th>Date</th><th>Montant</th><th>Note</th><th></th></tr></thead><tbody>'+
         s.payments.slice().reverse().map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td><td>'+(p.note||'—')+'</td>'+
