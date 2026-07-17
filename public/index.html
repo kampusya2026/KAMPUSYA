@@ -321,16 +321,18 @@ async function loadData(){
     db = { schools: (schools||[]).map(s => ({
       id: s.id, name: s.name, contact: s.contact, plan: s.plan, type: s.type,
       status: s.status, nextDue: s.next_due,
-      payments: (payments||[]).filter(p => p.school_id === s.id).map(p => ({id:p.id, date:p.pay_date, amount:Number(p.amount), note:p.note}))
+      payments: (payments||[]).filter(p => p.school_id === s.id).map(p => ({id:p.id, date:p.pay_date, amount:Number(p.amount), note:p.note, status:p.status||'confirme'}))
     })), totalStudents };
     return;
   }
   const { data: school } = await sb.from('schools').select('*').eq('id', session.schoolId).single();
+  const { data: subPayments } = await sb.from('payments').select('*').eq('school_id', session.schoolId).order('pay_date', { ascending: false });
   const { data: row } = await sb.from('school_data').select('data').eq('school_id', session.schoolId).maybeSingle();
   db = (row && row.data && Object.keys(row.data).length) ? row.data : emptySchoolData();
   db.school = { ...db.school, id: session.schoolId, name: school ? school.name : '', year: school ? school.year : '', type: school ? school.type : '',
     plan: school ? school.plan : '', status: school ? school.status : '', nextDue: school ? school.next_due : '',
     logo: school ? school.logo : null, signature: school ? school.signature : null };
+  db.subscriptionPayments = (subPayments||[]).map(p=>({id:p.id, date:p.pay_date, amount:Number(p.amount), note:p.note, status:p.status||'confirme'}));
   if(!db.evals) db.evals=[]; if(!db.schedule) db.schedule=[]; if(!db.events) db.events=[];
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
@@ -576,8 +578,14 @@ function adminOverview(){
     (db.school.nextDue?' — prochaine échéance le '+db.school.nextDue:'')+'</div>'+
   (PLANS[db.school.plan] && db.school.plan!=='essai' ? '<div>'+
     '<a href="'+DJAMO_PAYMENT_LINK+'" target="_blank" rel="noopener" class="btn-sm" style="display:inline-block;text-decoration:none;">Payer '+PLANS[db.school.plan].monthly.toLocaleString('fr-FR')+' F via Djamo</a>'+
-    '<div class="sub" style="margin-top:10px;">Le lien ouvre la page de paiement Djamo (Mobile Money, carte). Une fois le paiement effectué, transmets une preuve à l\'administration Kampusya pour la mise à jour de ton abonnement.</div>'+
+    ' <button class="btn-sm ghost" onclick="declarePayment()">J\'ai effectué ce paiement</button>'+
+    '<div class="sub" style="margin-top:10px;">Après avoir payé via le lien ci-dessus, clique sur "J\'ai effectué ce paiement" — il apparaîtra en attente de vérification chez Kampusya, qui confirmera dès réception.</div>'+
   '</div>' : '<div class="empty">Contactez l\'administration Kampusya pour choisir une formule payante.</div>')+
+  ((db.subscriptionPayments||[]).length ? '<div style="margin-top:16px;"><h4 style="font-size:13.5px;margin-bottom:8px;color:var(--gray);text-transform:uppercase;letter-spacing:.03em;">Historique</h4>'+
+    '<table><thead><tr><th>Date</th><th>Montant</th><th>Statut</th></tr></thead><tbody>'+
+    db.subscriptionPayments.map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td>'+
+      '<td><span class="tag '+(p.status==='confirme'?'green':'amber')+'">'+(p.status==='confirme'?'Confirmé':'En attente de vérification')+'</span></td></tr>').join('')+
+    '</tbody></table></div>' : '')+
   '</div>'+
   '<div class="panel"><div class="panel-head"><h3>Identité de l\'établissement</h3></div>'+
   '<div class="sub" style="margin-bottom:14px;">Le logo et le cachet/signature apparaîtront sur les bulletins et les factures générés.</div>'+
@@ -739,6 +747,22 @@ function exportArchiveExcel(idx){
 // Paiement via lien Djamo Business — pas d'API, pas de webhook : la
 // confirmation et la réactivation du compte restent manuelles (Super Admin,
 // panneau "Paiement"), comme pour un virement ou un dépôt Mobile Money classique.
+async function declarePayment(){
+  const plan = PLANS[db.school.plan];
+  if(!plan) return;
+  if(!confirm('Confirmer que tu viens d\'effectuer ce paiement de '+plan.monthly.toLocaleString('fr-FR')+' F via Djamo ? Il apparaîtra en attente de vérification.')) return;
+  const { data: { session: authSession } } = await sb.auth.getSession();
+  const requesterToken = authSession ? authSession.access_token : null;
+  try{
+    const res = await fetch('/.netlify/functions/declare-payment', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ schoolId: session.schoolId, amount: plan.monthly, requesterToken })
+    });
+    if(!res.ok){ showToast('Erreur : '+await res.text()); return; }
+    showToast('Paiement déclaré — en attente de vérification');
+    await loadData(); renderMain();
+  }catch(e){ showToast('Erreur réseau'); }
+}
 const DJAMO_PAYMENT_LINK = 'https://pay.djamo.com/qbe3o';
 function promptDjamoLink(schoolName){
   prompt('Lien de paiement Djamo à transmettre à '+schoolName+' :', DJAMO_PAYMENT_LINK);
@@ -3040,12 +3064,14 @@ function schoolsAdmin(){
   const grandesEcoles = schools.filter(s=>s.type==='Grande école').length;
   const universites = schools.filter(s=>s.type==='Université').length;
   const totalEleves = db.totalStudents || 0;
+  const pendingCount = schools.reduce((n,s)=>n + s.payments.filter(p=>p.status==='en_attente').length, 0);
   return '<div class="page-head"><div><h1>Écoles partenaires</h1><div class="sub">Gérez les accès, abonnements et contacts de chaque établissement</div></div></div>'+
   '<div class="cards-row">'+
     '<div class="stat-card"><div class="n">'+schools.length+'</div><div class="l">Écoles</div></div>'+
     '<div class="stat-card"><div class="n" style="color:var(--green);">'+actifs+'</div><div class="l">Abonnements actifs</div></div>'+
     '<div class="stat-card"><div class="n" style="color:var(--gold-dark);">'+essai+'</div><div class="l">À l\'essai</div></div>'+
     '<div class="stat-card"><div class="n" style="color:var(--red);">'+suspendus+'</div><div class="l">Accès suspendu</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--gold-dark);">'+pendingCount+'</div><div class="l">Paiements à vérifier</div></div>'+
   '</div>'+
   '<div class="cards-row">'+
     '<div class="stat-card"><div class="n">'+primaires+'</div><div class="l">Primaires</div></div>'+
@@ -3072,7 +3098,8 @@ function schoolsAdmin(){
     const nameRow = ui.editSchoolNameId===s.id
       ? '<div style="display:flex;gap:6px;"><input id="sn-name" value="'+s.name+'" style="padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;"><button class="btn-xs" onclick="saveSchoolName(\''+s.id+'\')">OK</button><button class="btn-xs" onclick="ui.editSchoolNameId=null;renderMain();">✕</button></div>'
       : '<b>'+s.name+'</b> <button class="edit-btn" onclick="ui.editSchoolNameId=\''+s.id+'\';renderMain();">Modifier</button>';
-    const rows = '<tr><td>'+nameRow+'<br><span style="color:var(--gray);font-size:12px;">'+s.contact+'</span></td>'+
+    const pendingForSchool = s.payments.filter(p=>p.status==='en_attente').length;
+    const rows = '<tr><td>'+nameRow+(pendingForSchool?' <span class="tag amber">'+pendingForSchool+' à vérifier</span>':'')+'<br><span style="color:var(--gray);font-size:12px;">'+s.contact+'</span></td>'+
       '<td><select onchange="updateSchoolType(\''+s.id+'\',this.value)">'+ETABLISSEMENT_TYPES.map(t=>'<option value="'+t+'" '+(t===type?'selected':'')+'>'+t+'</option>').join('')+'</select></td>'+
       '<td>'+planSelectHTML('plan-'+s.id, plan)+'<div style="font-size:11px;color:var(--gray);margin-top:4px;">'+PLANS[plan].price+'</div>'+
         '<button class="btn-xs" style="margin-top:5px;" onclick="updateSchoolPlan(\''+s.id+'\')">Appliquer</button></td>'+
@@ -3098,9 +3125,13 @@ function schoolsAdmin(){
       (plan!=='essai' ? '<div style="margin-top:12px;">'+
         '<button class="btn-xs" onclick="promptDjamoLink(\''+s.name.replace(/'/g,"\\'")+'\')">Partager le lien de paiement Djamo</button>'+
       '</div>' : '')+
-      (s.payments.length ? '<div style="margin-top:12px;"><table><thead><tr><th>Date</th><th>Montant</th><th>Note</th><th></th></tr></thead><tbody>'+
-        s.payments.slice().reverse().map(p=>'<tr><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td><td>'+(p.note||'—')+'</td>'+
-        '<td>'+(p.id?'<button class="del-btn" onclick="deletePayment(\''+p.id+'\',\''+s.id+'\')">Supprimer</button>':'')+'</td></tr>').join('')+
+      (s.payments.length ? '<div style="margin-top:12px;"><table><thead><tr><th>Date</th><th>Montant</th><th>Note</th><th>Statut</th><th></th></tr></thead><tbody>'+
+        s.payments.slice().reverse().map(p=>'<tr'+(p.status==='en_attente'?' style="background:var(--amber-bg);"':'')+'><td class="mono">'+p.date+'</td><td class="mono">'+p.amount.toLocaleString('fr-FR')+' F</td><td>'+(p.note||'—')+'</td>'+
+        '<td><span class="tag '+(p.status==='en_attente'?'amber':'green')+'">'+(p.status==='en_attente'?'En attente':'Confirmé')+'</span></td>'+
+        '<td style="display:flex;gap:4px;flex-wrap:wrap;">'+
+          (p.status==='en_attente'?'<button class="btn-xs" onclick="confirmDeclaredPayment(\''+p.id+'\',\''+s.id+'\')">Confirmer</button>':'')+
+          (p.id?'<button class="del-btn" onclick="deletePayment(\''+p.id+'\',\''+s.id+'\')">Supprimer</button>':'')+
+        '</td></tr>').join('')+
         '</tbody></table></div>' : '')+
       '</td></tr>' : '';
     const adminForm = ui.adminSchoolId===s.id ? '<tr><td colspan="7"><div class="form-grid">'+
@@ -3257,6 +3288,17 @@ async function recordPayment(id){
   if(e1 || e2){ showToast('Erreur lors de l\'enregistrement'); return; }
   ui.paySchoolId = null;
   showToast('Paiement enregistré — accès actif');
+  await loadData(); renderMain();
+}
+async function confirmDeclaredPayment(paymentId, schoolId){
+  const defaultDue = new Date();
+  defaultDue.setMonth(defaultDue.getMonth()+1);
+  const nextDue = prompt('Confirmer ce paiement — as-tu bien vérifié qu\'il est arrivé sur ton compte Djamo ?\n\nNouvelle échéance (AAAA-MM-JJ) :', defaultDue.toISOString().slice(0,10));
+  if(!nextDue) return;
+  const { error: e1 } = await sb.from('payments').update({ status:'confirme' }).eq('id', paymentId);
+  const { error: e2 } = await sb.from('schools').update({ status:'actif', next_due: nextDue }).eq('id', schoolId);
+  if(e1 || e2){ showToast('Erreur lors de la confirmation'); return; }
+  showToast('Paiement confirmé — accès actif');
   await loadData(); renderMain();
 }
 async function deletePayment(paymentId, schoolId){
