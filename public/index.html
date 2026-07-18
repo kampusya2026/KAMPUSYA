@@ -300,7 +300,7 @@ function emptySchoolData(){
     classes: [], subjects: [], profs: [], students: [], parents: [], schedule: [],
     attendance: [], grades: [], evals: [], journal: [],
     events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [], manuels: [],
-    adminAccess: { principals: [] },
+    adminAccess: { founderId: null, principals: [] },
     finance: { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [],
                tranches: [], personnel: [], paiementsSalaires: [], relances: [] }
   };
@@ -338,7 +338,7 @@ async function loadData(){
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
   if(!db.manuels) db.manuels=[];
-  if(!db.adminAccess) db.adminAccess = { principals: [] };
+  if(!db.adminAccess) db.adminAccess = { founderId: null, principals: [] };
   if(!db.finance) db.finance = { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [], tranches: [], personnel: [], paiementsSalaires: [], relances: [] };
   if(!db.finance.tranches) db.finance.tranches=[]; if(!db.finance.personnel) db.finance.personnel=[];
   if(!db.finance.paiementsSalaires) db.finance.paiementsSalaires=[]; if(!db.finance.relances) db.finance.relances=[];
@@ -1189,36 +1189,48 @@ function comptesAdmins(){
   }
   if(ui.adminAccountsList===null) return '<div class="panel"><div class="empty">Chargement des comptes administrateur...</div></div>';
   const list = ui.adminAccountsList;
-  const access = db.adminAccess || { principals: [] };
+  const access = db.adminAccess || { founderId: null, principals: [] };
   const principals = access.principals || [];
+  const founderId = access.founderId;
   const iAmPrincipal = isPrincipal(session.acctId);
+  const iAmFounder = founderId===session.acctId;
   return '<div class="panel"><div class="panel-head"><h3>Administrateurs principaux</h3></div>'+
-  '<div class="sub" style="margin-bottom:14px;">Seuls les administrateurs ayant le rôle <b>Principal</b> voient les onglets Bulletins et Finances. N\'importe quel administrateur principal peut accorder ou retirer ce rôle à un autre.</div>'+
+  '<div class="sub" style="margin-bottom:14px;">Seuls les administrateurs ayant le rôle <b>Principal</b> voient les onglets Bulletins et Finances. Le tout premier à avoir pris ce rôle (le <b>fondateur</b>) est le seul à pouvoir se l\'accorder ou se le retirer lui-même ; les autres administrateurs ne peuvent pas le lui retirer.</div>'+
   (!principals.length ? '<div class="empty" style="margin-bottom:14px;">Aucun administrateur principal désigné — personne ne voit les onglets Bulletins et Finances pour le moment.</div>'+
     '<button class="btn-sm" onclick="claimPrincipal()">Devenir administrateur principal</button>' : '')+
   '<table style="margin-top:14px;"><thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Principal</th></tr></thead><tbody>'+
   list.map(a=>{
     const rowIsPrincipal = principals.includes(a.id);
+    const rowIsFounder = founderId===a.id;
+    const canEditThisRow = rowIsFounder ? iAmFounder : iAmPrincipal;
     return '<tr><td><b>'+(a.full_name||'(sans nom)')+'</b></td><td>'+(a.email||'')+'</td>'+
-    '<td>'+(rowIsPrincipal?'<span class="tag amber">Principal</span>':'<span style="color:var(--gray);font-size:12.5px;">Standard</span>')+'</td>'+
-    '<td><input type="checkbox" '+(rowIsPrincipal?'checked':'')+' '+(!iAmPrincipal?'disabled':'')+' onchange="togglePrincipal(\''+a.id+'\',this.checked)"></td></tr>';
+    '<td>'+(rowIsFounder?'<span class="tag amber">Principal — Fondateur</span>':rowIsPrincipal?'<span class="tag amber">Principal</span>':'<span style="color:var(--gray);font-size:12.5px;">Standard</span>')+'</td>'+
+    '<td><input type="checkbox" '+(rowIsPrincipal?'checked':'')+' '+(!canEditThisRow?'disabled':'')+' onchange="togglePrincipal(\''+a.id+'\',this.checked)"></td></tr>';
   }).join('')+
   '</tbody></table></div>';
 }
 async function claimPrincipal(){
-  if(!db.adminAccess) db.adminAccess = { principals: [] };
+  if(!db.adminAccess) db.adminAccess = { founderId: null, principals: [] };
   if(!db.adminAccess.principals) db.adminAccess.principals = [];
+  const becomingFounder = !db.adminAccess.founderId;
+  if(becomingFounder) db.adminAccess.founderId = session.acctId;
   if(!db.adminAccess.principals.includes(session.acctId)) db.adminAccess.principals.push(session.acctId);
   await saveData(); renderMain();
-  showToast('Tu es maintenant administrateur principal');
+  showToast(becomingFounder ? 'Tu es maintenant administrateur principal fondateur' : 'Tu es maintenant administrateur principal');
 }
 async function togglePrincipal(adminId, checked){
-  if(!db.adminAccess) db.adminAccess = { principals: [] };
+  if(!db.adminAccess) db.adminAccess = { founderId: null, principals: [] };
   if(!db.adminAccess.principals) db.adminAccess.principals = [];
+  const isFounderRow = db.adminAccess.founderId === adminId;
+  const iAmFounder = db.adminAccess.founderId === session.acctId;
+  if(isFounderRow && !iAmFounder){
+    showToast('Seul l\'administrateur fondateur peut modifier son propre statut principal.');
+    renderMain(); return;
+  }
   if(checked){
     if(!db.adminAccess.principals.includes(adminId)) db.adminAccess.principals.push(adminId);
   }else{
-    if(adminId===session.acctId && db.adminAccess.principals.length<=1){
+    if(!isFounderRow && adminId===session.acctId && db.adminAccess.principals.length<=1){
       showToast('Tu es le seul administrateur principal — accorde le rôle à quelqu\'un d\'autre avant de retirer le tien.');
       renderMain(); return;
     }
