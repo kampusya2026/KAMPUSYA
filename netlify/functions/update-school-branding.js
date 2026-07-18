@@ -26,7 +26,7 @@ exports.handler = async (event) => {
 
     const { data: requesterData, error: authError } = await supabaseAdmin.auth.getUser(requesterToken);
     if (authError || !requesterData?.user) {
-      return { statusCode: 401, body: 'Non authentifié' };
+      return { statusCode: 401, body: 'Non authentifié — détail : ' + (authError ? authError.message : 'aucun utilisateur trouvé pour ce jeton') };
     }
 
     const { data: requesterProfile } = await supabaseAdmin
