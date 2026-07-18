@@ -300,6 +300,7 @@ function emptySchoolData(){
     classes: [], subjects: [], profs: [], students: [], parents: [], schedule: [],
     attendance: [], grades: [], evals: [], journal: [],
     events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [], manuels: [],
+    adminAccess: { principalId: null, permissions: {} },
     finance: { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [],
                tranches: [], personnel: [], paiementsSalaires: [], relances: [] }
   };
@@ -337,6 +338,7 @@ async function loadData(){
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
   if(!db.manuels) db.manuels=[];
+  if(!db.adminAccess) db.adminAccess = { principalId: null, permissions: {} };
   if(!db.finance) db.finance = { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [], tranches: [], personnel: [], paiementsSalaires: [], relances: [] };
   if(!db.finance.tranches) db.finance.tranches=[]; if(!db.finance.personnel) db.finance.personnel=[];
   if(!db.finance.paiementsSalaires) db.finance.paiementsSalaires=[]; if(!db.finance.relances) db.finance.relances=[];
@@ -496,8 +498,10 @@ function renderShell(){
   document.getElementById('who-name').textContent = who.name;
   document.getElementById('who-role').textContent = roleLabel();
   const tabsEl = document.getElementById('tabs');
+  const visibleTabs = TABS[session.role].filter(t=>hasAccess(t[0]));
+  if(session.role==='admin' && !hasAccess(ui.adminTab)) ui.adminTab = visibleTabs[0] ? visibleTabs[0][0] : 'overview';
   const activeTab = currentTabKey();
-  tabsEl.innerHTML = TABS[session.role].map(function(t){
+  tabsEl.innerHTML = visibleTabs.map(function(t){
     const key=t[0], label=t[1], color=t[2];
     return '<button class="tab-btn '+(key===activeTab?'active':'')+'" onclick="setTab(\''+key+'\')">'+
       '<span class="dot" style="background:'+color+'"></span>'+label+'</button>';
@@ -552,8 +556,8 @@ function renderAdmin(){
   if(ui.adminTab==='comptes') return adminComptes();
   if(ui.adminTab==='presences') return adminPresences();
   if(ui.adminTab==='notes') return adminNotes();
-  if(ui.adminTab==='bulletins') return adminBulletins();
-  if(ui.adminTab==='finances') return adminFinances();
+  if(ui.adminTab==='bulletins') return hasAccess('bulletins') ? adminBulletins() : accessDeniedHTML();
+  if(ui.adminTab==='finances') return hasAccess('finances') ? adminFinances() : accessDeniedHTML();
   if(ui.adminTab==='programme') return adminProgramme();
   if(ui.adminTab==='manuel') return adminManuel();
   if(ui.adminTab==='agenda') return adminAgenda();
@@ -1158,10 +1162,77 @@ function adminComptes(){
     '<button class="subtab '+(ui.adminAcctTab==='profs'?'active':'')+'" onclick="setAcctTab(\'profs\')">'+teacherGenericLabel(true)+'s ('+db.profs.length+')</button>'+
     '<button class="subtab '+(ui.adminAcctTab==='eleves'?'active':'')+'" onclick="setAcctTab(\'eleves\')">'+learnerLabel(true,true)+' ('+db.students.length+')</button>'+
     '<button class="subtab '+(ui.adminAcctTab==='parents'?'active':'')+'" onclick="setAcctTab(\'parents\')">Parents ('+db.parents.length+')</button>'+
+    '<button class="subtab '+(ui.adminAcctTab==='admins'?'active':'')+'" onclick="setAcctTab(\'admins\')">Administrateurs</button>'+
   '</div>'+
-  (ui.adminAcctTab==='profs'?comptesProfs():ui.adminAcctTab==='eleves'?comptesEleves():comptesParents());
+  (ui.adminAcctTab==='profs'?comptesProfs():ui.adminAcctTab==='eleves'?comptesEleves():ui.adminAcctTab==='admins'?comptesAdmins():comptesParents());
 }
-function setAcctTab(t){ ui.adminAcctTab=t; ui.editProf=null; ui.editStudent=null; ui.editParent=null; renderMain(); }
+function accessDeniedHTML(){
+  return '<div class="panel"><div class="empty">Accès restreint par l\'administrateur principal de l\'établissement.</div></div>';
+}
+function isAdminPrincipal(){
+  const access = db.adminAccess;
+  return !access || !access.principalId || access.principalId === session.acctId;
+}
+function hasAccess(section){
+  if(session.role!=='admin') return true;
+  if(section!=='bulletins' && section!=='finances') return true;
+  if(isAdminPrincipal()) return true;
+  const access = db.adminAccess;
+  if(!access || !access.permissions || !(session.acctId in access.permissions)) return true;
+  return !!access.permissions[session.acctId][section];
+}
+function comptesAdmins(){
+  if(ui.adminAccountsList===undefined){
+    ui.adminAccountsList = null;
+    sb.from('profiles').select('id, full_name, email').eq('school_id', session.schoolId).eq('role','admin').order('full_name').then(({data})=>{
+      ui.adminAccountsList = data || [];
+      renderMain();
+    });
+    return '<div class="panel"><div class="empty">Chargement des comptes administrateur...</div></div>';
+  }
+  if(ui.adminAccountsList===null) return '<div class="panel"><div class="empty">Chargement des comptes administrateur...</div></div>';
+  const list = ui.adminAccountsList;
+  const access = db.adminAccess || { principalId: null, permissions: {} };
+  const principalId = access.principalId;
+  const iAmPrincipal = isAdminPrincipal();
+  return '<div class="panel"><div class="panel-head"><h3>Accès des administrateurs</h3></div>'+
+  '<div class="sub" style="margin-bottom:14px;">L\'administrateur principal décide qui, parmi les comptes admin de l\'école, a accès aux Bulletins et aux Finances.</div>'+
+  (!principalId ? '<div class="empty" style="margin-bottom:14px;">Aucun administrateur principal désigné pour le moment — tous les comptes ont un accès complet par défaut.</div>'+
+    '<button class="btn-sm" onclick="claimPrincipal()">Devenir administrateur principal</button>' : '')+
+  '<table style="margin-top:14px;"><thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Bulletins</th><th>Finances</th><th></th></tr></thead><tbody>'+
+  list.map(a=>{
+    const isPrincipalRow = principalId===a.id;
+    const perms = (access.permissions && access.permissions[a.id]) || null;
+    const bulletinsChecked = isPrincipalRow || !perms || perms.bulletins;
+    const financesChecked = isPrincipalRow || !perms || perms.finances;
+    return '<tr><td><b>'+(a.full_name||'(sans nom)')+'</b></td><td>'+(a.email||'')+'</td>'+
+    '<td>'+(isPrincipalRow?'<span class="tag amber">Principal</span>':'<span style="color:var(--gray);font-size:12.5px;">Secondaire</span>')+'</td>'+
+    '<td><input type="checkbox" '+(bulletinsChecked?'checked':'')+' '+(isPrincipalRow||!iAmPrincipal?'disabled':'')+' onchange="togglePermission(\''+a.id+'\',\'bulletins\',this.checked)"></td>'+
+    '<td><input type="checkbox" '+(financesChecked?'checked':'')+' '+(isPrincipalRow||!iAmPrincipal?'disabled':'')+' onchange="togglePermission(\''+a.id+'\',\'finances\',this.checked)"></td>'+
+    '<td>'+(iAmPrincipal && !isPrincipalRow?'<button class="btn-xs" onclick="transferPrincipal(\''+a.id+'\',\''+(a.full_name||'').replace(/'/g,"\\'")+'\')">Rendre principal</button>':'')+'</td></tr>';
+  }).join('')+
+  '</tbody></table></div>';
+}
+async function claimPrincipal(){
+  if(!db.adminAccess) db.adminAccess = { principalId:null, permissions:{} };
+  db.adminAccess.principalId = session.acctId;
+  await saveData(); renderMain();
+  showToast('Tu es maintenant administrateur principal');
+}
+async function transferPrincipal(newId, name){
+  if(!confirm('Transférer le rôle d\'administrateur principal à '+name+' ? Tu deviendras un administrateur secondaire.')) return;
+  db.adminAccess.principalId = newId;
+  await saveData(); renderMain();
+  showToast('Rôle transféré à '+name);
+}
+async function togglePermission(adminId, section, checked){
+  if(!db.adminAccess) db.adminAccess = { principalId: session.acctId, permissions:{} };
+  if(!db.adminAccess.permissions) db.adminAccess.permissions = {};
+  if(!db.adminAccess.permissions[adminId]) db.adminAccess.permissions[adminId] = { bulletins:true, finances:true };
+  db.adminAccess.permissions[adminId][section] = checked;
+  await saveData(); renderMain();
+}
+function setAcctTab(t){ ui.adminAcctTab=t; ui.editProf=null; ui.editStudent=null; ui.editParent=null; ui.adminAccountsList=undefined; renderMain(); }
 
 // Crée un vrai compte de connexion (Supabase Auth) pour un admin, professeur, élève
 // ou parent, via la fonction serverless sécurisée, avec le mot de passe choisi par
@@ -2060,10 +2131,11 @@ function adminFinanceFactures(){
   '</div>'+
   '<div class="f-group" style="margin-top:10px;"><label>Description</label><textarea id="fa-desc" rows="2" placeholder="Ex. Fournitures scolaires 2ème trimestre"></textarea></div>'+
   '<button class="btn-sm" style="margin-top:12px;" onclick="addFacture()">Créer la facture</button></div>'+
-  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>N°</th><th>Date</th><th>Destinataire</th><th>Montant</th><th>Statut</th><th></th></tr></thead><tbody>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>N°</th><th>Date</th><th>Destinataire</th><th>Montant</th><th>Statut</th><th>Créé par</th><th></th></tr></thead><tbody>'+
   (factures.map(f=>'<tr><td class="mono">'+f.numero+'</td><td class="mono">'+f.date+'</td><td>'+f.tiers+'</td><td class="mono">'+f.montant.toLocaleString('fr-FR')+' F</td>'+
     '<td><span class="tag '+(f.statut==='payee'?'green':'red')+'">'+(f.statut==='payee'?'Payée':'Impayée')+'</span></td>'+
-    '<td><button class="btn-xs" onclick="downloadFacturePDF(\''+f.id+'\')">PDF</button> <button class="del-btn" onclick="deleteFacture(\''+f.id+'\')">Supprimer</button></td></tr>').join('') || '<tr><td colspan="6" class="empty">Aucune facture créée.</td></tr>')+
+    '<td style="font-size:12.5px;color:var(--gray);">'+(f.createdBy||'—')+'</td>'+
+    '<td><button class="btn-xs" onclick="downloadFacturePDF(\''+f.id+'\')">PDF</button> <button class="del-btn" onclick="deleteFacture(\''+f.id+'\')">Supprimer</button></td></tr>').join('') || '<tr><td colspan="7" class="empty">Aucune facture créée.</td></tr>')+
   '</tbody></table></div>';
 }
 function addFacture(){
@@ -2078,7 +2150,8 @@ function addFacture(){
   const description = document.getElementById('fa-desc').value.trim();
   if(!montant) return showToast('Indiquez un montant');
   const numero = 'FA-'+String((db.finance.factures.length+1)).padStart(4,'0');
-  db.finance.factures.push({ id: uid('fac'), numero, type, studentId, tiers, montant, date, statut, description });
+  const createdBy = session.fullName || 'Administration';
+  db.finance.factures.push({ id: uid('fac'), numero, type, studentId, tiers, montant, date, statut, description, createdBy });
   saveData(); renderMain(); showToast('Facture '+numero+' créée');
 }
 function deleteFacture(id){
@@ -2107,8 +2180,8 @@ function downloadFacturePDF(id){
 
   doc.autoTable({
     startY:y,
-    head:[['Destinataire','Description','Montant','Statut']],
-    body:[[ f.tiers, f.description||'—', f.montant.toLocaleString('fr-FR')+' F', f.statut==='payee'?'Payée':'Impayée' ]],
+    head:[['Destinataire','Description','Montant','Statut','Généré par']],
+    body:[[ f.tiers, f.description||'—', f.montant.toLocaleString('fr-FR')+' F', f.statut==='payee'?'Payée':'Impayée', f.createdBy||'—' ]],
     styles:{fontSize:10.5}, headStyles:{fillColor:[27,42,74]}, margin:{left:40,right:40}
   });
   y = doc.lastAutoTable.finalY + 30;
