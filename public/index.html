@@ -300,7 +300,7 @@ function emptySchoolData(){
     classes: [], subjects: [], profs: [], students: [], parents: [], schedule: [],
     attendance: [], grades: [], evals: [], journal: [],
     events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [], manuels: [],
-    adminAccess: { principalId: null, permissions: {} },
+    adminAccess: { principals: [] },
     finance: { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [],
                tranches: [], personnel: [], paiementsSalaires: [], relances: [] }
   };
@@ -338,7 +338,7 @@ async function loadData(){
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
   if(!db.manuels) db.manuels=[];
-  if(!db.adminAccess) db.adminAccess = { principalId: null, permissions: {} };
+  if(!db.adminAccess) db.adminAccess = { principals: [] };
   if(!db.finance) db.finance = { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [], tranches: [], personnel: [], paiementsSalaires: [], relances: [] };
   if(!db.finance.tranches) db.finance.tranches=[]; if(!db.finance.personnel) db.finance.personnel=[];
   if(!db.finance.paiementsSalaires) db.finance.paiementsSalaires=[]; if(!db.finance.relances) db.finance.relances=[];
@@ -1167,19 +1167,16 @@ function adminComptes(){
   (ui.adminAcctTab==='profs'?comptesProfs():ui.adminAcctTab==='eleves'?comptesEleves():ui.adminAcctTab==='admins'?comptesAdmins():comptesParents());
 }
 function accessDeniedHTML(){
-  return '<div class="panel"><div class="empty">Accès restreint par l\'administrateur principal de l\'établissement.</div></div>';
+  return '<div class="panel"><div class="empty">Accès restreint aux administrateurs ayant le rôle Principal.</div></div>';
 }
-function isAdminPrincipal(){
+function isPrincipal(id){
   const access = db.adminAccess;
-  return !access || !access.principalId || access.principalId === session.acctId;
+  return !!(access && access.principals && access.principals.includes(id));
 }
 function hasAccess(section){
   if(session.role!=='admin') return true;
   if(section!=='bulletins' && section!=='finances') return true;
-  if(isAdminPrincipal()) return true;
-  const access = db.adminAccess;
-  if(!access || !access.permissions || !(session.acctId in access.permissions)) return true;
-  return !!access.permissions[session.acctId][section];
+  return isPrincipal(session.acctId);
 }
 function comptesAdmins(){
   if(ui.adminAccountsList===undefined){
@@ -1192,44 +1189,41 @@ function comptesAdmins(){
   }
   if(ui.adminAccountsList===null) return '<div class="panel"><div class="empty">Chargement des comptes administrateur...</div></div>';
   const list = ui.adminAccountsList;
-  const access = db.adminAccess || { principalId: null, permissions: {} };
-  const principalId = access.principalId;
-  const iAmPrincipal = isAdminPrincipal();
-  return '<div class="panel"><div class="panel-head"><h3>Accès des administrateurs</h3></div>'+
-  '<div class="sub" style="margin-bottom:14px;">L\'administrateur principal décide qui, parmi les comptes admin de l\'école, a accès aux Bulletins et aux Finances.</div>'+
-  (!principalId ? '<div class="empty" style="margin-bottom:14px;">Aucun administrateur principal désigné pour le moment — tous les comptes ont un accès complet par défaut.</div>'+
+  const access = db.adminAccess || { principals: [] };
+  const principals = access.principals || [];
+  const iAmPrincipal = isPrincipal(session.acctId);
+  return '<div class="panel"><div class="panel-head"><h3>Administrateurs principaux</h3></div>'+
+  '<div class="sub" style="margin-bottom:14px;">Seuls les administrateurs ayant le rôle <b>Principal</b> voient les onglets Bulletins et Finances. N\'importe quel administrateur principal peut accorder ou retirer ce rôle à un autre.</div>'+
+  (!principals.length ? '<div class="empty" style="margin-bottom:14px;">Aucun administrateur principal désigné — personne ne voit les onglets Bulletins et Finances pour le moment.</div>'+
     '<button class="btn-sm" onclick="claimPrincipal()">Devenir administrateur principal</button>' : '')+
-  '<table style="margin-top:14px;"><thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Bulletins</th><th>Finances</th><th></th></tr></thead><tbody>'+
+  '<table style="margin-top:14px;"><thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Principal</th></tr></thead><tbody>'+
   list.map(a=>{
-    const isPrincipalRow = principalId===a.id;
-    const perms = (access.permissions && access.permissions[a.id]) || null;
-    const bulletinsChecked = isPrincipalRow || !perms || perms.bulletins;
-    const financesChecked = isPrincipalRow || !perms || perms.finances;
+    const rowIsPrincipal = principals.includes(a.id);
     return '<tr><td><b>'+(a.full_name||'(sans nom)')+'</b></td><td>'+(a.email||'')+'</td>'+
-    '<td>'+(isPrincipalRow?'<span class="tag amber">Principal</span>':'<span style="color:var(--gray);font-size:12.5px;">Secondaire</span>')+'</td>'+
-    '<td><input type="checkbox" '+(bulletinsChecked?'checked':'')+' '+(isPrincipalRow||!iAmPrincipal?'disabled':'')+' onchange="togglePermission(\''+a.id+'\',\'bulletins\',this.checked)"></td>'+
-    '<td><input type="checkbox" '+(financesChecked?'checked':'')+' '+(isPrincipalRow||!iAmPrincipal?'disabled':'')+' onchange="togglePermission(\''+a.id+'\',\'finances\',this.checked)"></td>'+
-    '<td>'+(iAmPrincipal && !isPrincipalRow?'<button class="btn-xs" onclick="transferPrincipal(\''+a.id+'\',\''+(a.full_name||'').replace(/'/g,"\\'")+'\')">Rendre principal</button>':'')+'</td></tr>';
+    '<td>'+(rowIsPrincipal?'<span class="tag amber">Principal</span>':'<span style="color:var(--gray);font-size:12.5px;">Standard</span>')+'</td>'+
+    '<td><input type="checkbox" '+(rowIsPrincipal?'checked':'')+' '+(!iAmPrincipal?'disabled':'')+' onchange="togglePrincipal(\''+a.id+'\',this.checked)"></td></tr>';
   }).join('')+
   '</tbody></table></div>';
 }
 async function claimPrincipal(){
-  if(!db.adminAccess) db.adminAccess = { principalId:null, permissions:{} };
-  db.adminAccess.principalId = session.acctId;
+  if(!db.adminAccess) db.adminAccess = { principals: [] };
+  if(!db.adminAccess.principals) db.adminAccess.principals = [];
+  if(!db.adminAccess.principals.includes(session.acctId)) db.adminAccess.principals.push(session.acctId);
   await saveData(); renderMain();
   showToast('Tu es maintenant administrateur principal');
 }
-async function transferPrincipal(newId, name){
-  if(!confirm('Transférer le rôle d\'administrateur principal à '+name+' ? Tu deviendras un administrateur secondaire.')) return;
-  db.adminAccess.principalId = newId;
-  await saveData(); renderMain();
-  showToast('Rôle transféré à '+name);
-}
-async function togglePermission(adminId, section, checked){
-  if(!db.adminAccess) db.adminAccess = { principalId: session.acctId, permissions:{} };
-  if(!db.adminAccess.permissions) db.adminAccess.permissions = {};
-  if(!db.adminAccess.permissions[adminId]) db.adminAccess.permissions[adminId] = { bulletins:true, finances:true };
-  db.adminAccess.permissions[adminId][section] = checked;
+async function togglePrincipal(adminId, checked){
+  if(!db.adminAccess) db.adminAccess = { principals: [] };
+  if(!db.adminAccess.principals) db.adminAccess.principals = [];
+  if(checked){
+    if(!db.adminAccess.principals.includes(adminId)) db.adminAccess.principals.push(adminId);
+  }else{
+    if(adminId===session.acctId && db.adminAccess.principals.length<=1){
+      showToast('Tu es le seul administrateur principal — accorde le rôle à quelqu\'un d\'autre avant de retirer le tien.');
+      renderMain(); return;
+    }
+    db.adminAccess.principals = db.adminAccess.principals.filter(id=>id!==adminId);
+  }
   await saveData(); renderMain();
 }
 function setAcctTab(t){ ui.adminAcctTab=t; ui.editProf=null; ui.editStudent=null; ui.editParent=null; ui.adminAccountsList=undefined; renderMain(); }
