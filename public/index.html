@@ -1490,14 +1490,19 @@ function downloadTemplate(kind){
     rows = [
       { 'Nom complet': 'Kouadio Affoué', 'Email': 'affoue.kouadio@exemple.ci', 'Classe': db.classes[0] ? db.classes[0].name : 'Nom exact de la classe', 'Mot de passe (optionnel)': '' },
     ];
-  }else{
+  }else if(kind==='profs'){
     rows = [
       { 'Nom complet': 'Aya N\'Guessan', 'Email': 'aya.nguessan@exemple.ci', 'Civilité (M ou Mme)': 'Mme', 'Matières (séparées par des virgules)': db.subjects[0] ? db.subjects[0].name : 'Nom exact de la matière', 'Classes (séparées par des virgules)': db.classes[0] ? db.classes[0].name : 'Nom exact de la classe', 'Mot de passe (optionnel)': '' },
+    ];
+  }else{
+    rows = [
+      { 'Nom complet': 'M. Yao Konan', 'Email': 'yao.konan@exemple.ci', 'Enfant(s) (noms séparés par des virgules)': db.students[0] ? db.students[0].name : 'Nom exact de l\'élève', 'Mot de passe (optionnel)': '' },
     ];
   }
   const ws = XLSX.utils.json_to_sheet(rows);
   XLSX.utils.book_append_sheet(wb, ws, 'Modèle');
-  XLSX.writeFile(wb, (kind==='eleves' ? 'Modele-import-'+learnerLabel(false,true) : 'Modele-import-profs')+'.xlsx');
+  const fileNames = { eleves:'Modele-import-'+learnerLabel(false,true), profs:'Modele-import-profs', parents:'Modele-import-parents' };
+  XLSX.writeFile(wb, fileNames[kind]+'.xlsx');
   showToast('Modèle téléchargé — remplace la ligne d\'exemple par tes propres données, sans changer les en-têtes');
 }
 function findByNameLoose(list, name){
@@ -1506,10 +1511,11 @@ function findByNameLoose(list, name){
   return list.find(x=>x.name.trim().toLowerCase()===target) || null;
 }
 const IMPORT_KEYWORDS = {
-  name: ['nom','élève','eleve','étudiant','etudiant','professeur','prof','enseignant','name','apprenant','maître','maitre'],
+  name: ['nom','élève','eleve','étudiant','etudiant','professeur','prof','enseignant','name','apprenant','maître','maitre','parent'],
   email: ['mail','courriel'],
   classe: ['classe','class','niveau'],
   matiere: ['matière','matiere','subject','discipline'],
+  enfant: ['enfant','fils','fille','lié','lie'],
 };
 function looksLikeEmail(v){ return /\S+@\S+\.\S+/.test(String(v||'')); }
 function looksLikeName(v, alreadyUsed){
@@ -1575,7 +1581,7 @@ async function previewImport(kind){
 
   const headerRow = hasRealHeader ? firstRow : [];
   const dataRows = hasRealHeader ? raw.slice(1) : raw;
-  const purposes = kind==='eleves' ? ['name','email','classe'] : ['name','email','classe','matiere'];
+  const purposes = kind==='eleves' ? ['name','email','classe'] : kind==='profs' ? ['name','email','classe','matiere'] : ['name','email','enfant'];
   const cols = autoDetectColumns(headerRow, dataRows, purposes);
 
   const parsed = dataRows.map(r=>{
@@ -1588,7 +1594,7 @@ async function previewImport(kind){
       if(!name) errors.push('nom manquant');
       if(className && !cls) errors.push('classe introuvable : "'+className+'"');
       return { name, email, className, classId: cls?cls.id:null, password:'', errors };
-    }else{
+    }else if(kind==='profs'){
       const clsRaw = cols.classe>=0 ? String(r[cols.classe]||'') : '';
       const subjRaw = cols.matiere>=0 ? String(r[cols.matiere]||'') : '';
       const subjNames = subjRaw.split(/[,;/]/).map(s=>s.trim()).filter(Boolean);
@@ -1598,6 +1604,14 @@ async function previewImport(kind){
       const errors = [];
       if(!name) errors.push('nom manquant');
       return { name, email, civilite:'M', subjectIds, classIds, password:'', errors };
+    }else{
+      const childRaw = cols.enfant>=0 ? String(r[cols.enfant]||'') : '';
+      const childNames = childRaw.split(/[,;/]/).map(s=>s.trim()).filter(Boolean);
+      const studentIds = childNames.map(n=>findByNameLoose(db.students,n)).filter(Boolean).map(s=>s.id);
+      const errors = [];
+      if(!name) errors.push('nom manquant');
+      if(childNames.length && !studentIds.length) errors.push('aucun enfant reconnu parmi : "'+childNames.join(', ')+'"');
+      return { name, email, studentIds, password:'', errors };
     }
   }).filter(r=>r.name || r.email);
 
@@ -1615,9 +1629,9 @@ function renderImportPreview(kind){
       '<button class="btn-xs" onclick="applyCommonPassword(\''+kind+'\')">Appliquer à tous</button>'+
       '<button class="btn-xs ghost" onclick="applyCommonPassword(\''+kind+'\', true)">Générer un code aléatoire par personne</button>'+
     '</div>'+
-    '<table><thead><tr><th>Nom</th><th>Email</th><th>'+(kind==='eleves'?'Classe':'Matières / Classes')+'</th><th>Mot de passe</th><th>Statut</th></tr></thead><tbody>'+
+    '<table><thead><tr><th>Nom</th><th>Email</th><th>'+(kind==='eleves'?'Classe':kind==='profs'?'Matières / Classes':'Enfant(s) lié(s)')+'</th><th>Mot de passe</th><th>Statut</th></tr></thead><tbody>'+
     parsed.map((r,i)=>'<tr'+(r.errors.length?' style="background:var(--red-bg);"':'')+'><td>'+r.name+'</td><td>'+(r.email||'<span style="color:var(--gray);">—</span>')+'</td>'+
-      '<td>'+(kind==='eleves' ? (r.className||'<span style="color:var(--gray);">—</span>') : (r.subjectIds.length+' matière(s), '+r.classIds.length+' classe(s)'))+'</td>'+
+      '<td>'+(kind==='eleves' ? (r.className||'<span style="color:var(--gray);">—</span>') : kind==='profs' ? (r.subjectIds.length+' matière(s), '+r.classIds.length+' classe(s)') : (r.studentIds.length+' enfant(s) reconnu(s)'))+'</td>'+
       '<td><input id="imp-pw-'+kind+'-'+i+'" value="'+r.password+'" placeholder="mot de passe" style="width:120px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;" onchange="ui.importData_'+kind+'['+i+'].password=this.value;"></td>'+
       '<td>'+(r.errors.length ? '<span class="tag red">'+r.errors.join(', ')+'</span>' : '<span class="tag green">OK</span>')+'</td></tr>').join('')+
     '</tbody></table>'+
@@ -1662,12 +1676,15 @@ async function confirmImport(kind){
     el.innerHTML = '<div class="sub">Import en cours... '+(i+1)+' / '+rows.length+' ('+r.name+')</div>';
     const generatedUsername = !r.email ? generateUniqueUsername(r.name, takenUsernames) : null;
     const identifiant = r.email || generatedUsername;
-    const id = await createSchoolAccount(identifiant, r.name, kind==='eleves'?'eleve':'prof', null, r.password, true);
+    const role = kind==='eleves' ? 'eleve' : kind==='profs' ? 'prof' : 'parent';
+    const id = await createSchoolAccount(identifiant, r.name, role, null, r.password, true);
     if(id){
       if(kind==='eleves'){
         db.students.push({id, name:r.name, email:identifiant, classId:r.classId});
-      }else{
+      }else if(kind==='profs'){
         db.profs.push({id, name:r.name, email:identifiant, civilite:r.civilite, subjectIds:r.subjectIds, classIds:r.classIds});
+      }else{
+        db.parents.push({id, name:r.name, email:identifiant, studentIds:r.studentIds});
       }
       results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:r.password, statut:'Créé' });
     }else{
@@ -1686,7 +1703,8 @@ function downloadImportResults(results, kind){
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(results);
   XLSX.utils.book_append_sheet(wb, ws, 'Résultats');
-  XLSX.writeFile(wb, 'Identifiants-'+(kind==='eleves'?learnerLabel(false,true):'profs')+'-'+todayISO()+'.xlsx');
+  const fileNames = { eleves:learnerLabel(false,true), profs:'profs', parents:'parents' };
+  XLSX.writeFile(wb, 'Identifiants-'+fileNames[kind]+'-'+todayISO()+'.xlsx');
 }
 async function saveStudent(id){
   const s = db.students.find(x=>x.id===id);
@@ -1741,6 +1759,14 @@ function comptesParents(){
   '<div style="margin-top:12px;"><label class="field-label" style="margin-top:0;">Enfant(s) lié(s)</label><div class="chips">'+
   (db.students.map(s=>'<label class="f-check"><input type="checkbox" class="pa-child" value="'+s.id+'"> '+s.name+'</label>').join('') || '<span class="empty">Créez d\'abord des '+learnerLabel(false,true)+'</span>')+
   '</div></div><button class="btn-sm" style="margin-top:14px;" onclick="addParent()">Créer le compte</button></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Importer plusieurs parents d\'un coup</h3></div>'+
+  '<div class="sub" style="margin-bottom:12px;">Vous avez déjà une liste en Excel (même désordonnée, avec ou sans e-mail) ? Importez-la directement — les noms, e-mails et enfants liés sont reconnus automatiquement. Tu peux aussi appliquer un code d\'accès commun à tout le monde, puis le modifier au cas par cas si besoin.</div>'+
+  '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">'+
+    '<button class="btn-sm ghost" onclick="downloadTemplate(\'parents\')">Télécharger le modèle Excel</button>'+
+    '<input type="file" id="import-parents-file" accept=".xlsx,.xls" onchange="previewImport(\'parents\')">'+
+  '</div>'+
+  '<div id="import-parents-preview"></div>'+
+  '</div>'+
   '<div class="selector-row"><select onchange="ui.parentClassFilter=this.value; renderMain();">'+
     '<option value="">Toutes les classes</option>'+
     db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.parentClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
