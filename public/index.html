@@ -204,8 +204,8 @@ tr:last-child td{border-bottom:none;}
       <h1>Connexion</h1>
       <div class="sub">Connectez-vous avec l'e-mail et le mot de passe fournis par votre établissement.</div>
       <div id="suspend-banner" style="display:none;background:var(--red-bg);color:var(--red);border-radius:9px;padding:12px 14px;font-size:13px;font-weight:600;margin-bottom:14px;line-height:1.5;"></div>
-      <label class="field-label" style="margin-top:0;">E-mail</label>
-      <input class="select-acct" id="login-email" type="email" placeholder="vous@ecole.ci" autocomplete="username">
+      <label class="field-label" style="margin-top:0;">E-mail ou nom d'utilisateur</label>
+      <input class="select-acct" id="login-email" type="text" placeholder="vous@ecole.ci ou nom.prenom" autocomplete="username">
       <label class="field-label">Mot de passe</label>
       <input class="select-acct" id="login-password" type="password" placeholder="••••••••" autocomplete="current-password">
       <button class="btn-primary" onclick="doLogin()" id="login-btn">Entrer</button>
@@ -374,17 +374,31 @@ function fmtDate(d){
 /* ============================================================
    LOGIN
    ============================================================ */
+// Les comptes créés sans e-mail réel utilisent un nom d'utilisateur ; en coulisses,
+// Supabase a quand même besoin d'un format e-mail valide, donc on lui ajoute ce
+// domaine fixe automatiquement — invisible pour la personne qui se connecte.
+const USERNAME_LOGIN_DOMAIN = 'login.kampusya.site';
+function toAuthEmail(value){
+  const v = (value||'').trim();
+  return v.includes('@') ? v : v + '@' + USERNAME_LOGIN_DOMAIN;
+}
+function isGeneratedUsername(email){
+  return (email||'').toLowerCase().endsWith('@'+USERNAME_LOGIN_DOMAIN);
+}
+function displayLogin(email){
+  return isGeneratedUsername(email) ? email.split('@')[0] : email;
+}
 async function doLogin(){
-  const email = document.getElementById('login-email').value.trim();
+  const emailInput = document.getElementById('login-email').value.trim();
   const password = document.getElementById('login-password').value;
   const banner = document.getElementById('suspend-banner');
   const btn = document.getElementById('login-btn');
   banner.style.display = 'none';
-  if(!email || !password){ showToast('Renseignez l\'e-mail et le mot de passe'); return; }
+  if(!emailInput || !password){ showToast('Renseignez l\'e-mail (ou le nom d\'utilisateur) et le mot de passe'); return; }
   btn.disabled = true; btn.textContent = 'Connexion...';
-  const { error } = await sb.auth.signInWithPassword({ email, password });
+  const { error } = await sb.auth.signInWithPassword({ email: toAuthEmail(emailInput), password });
   btn.disabled = false; btn.textContent = 'Entrer';
-  if(error){ showToast('E-mail ou mot de passe incorrect'); return; }
+  if(error){ showToast('Identifiant ou mot de passe incorrect'); return; }
   await afterLogin();
 }
 
@@ -1246,26 +1260,27 @@ function setAcctTab(t){ ui.adminAcctTab=t; ui.editProf=null; ui.editStudent=null
 function generateTempPassword(){
   return Math.random().toString(36).slice(-6) + Math.floor(10+Math.random()*89) + '!';
 }
-async function createSchoolAccount(email, fullName, role, targetSchoolId, password){
-  if(!password || password.length < 6){ showToast('Le mot de passe doit contenir au moins 6 caractères'); return null; }
+async function createSchoolAccount(email, fullName, role, targetSchoolId, password, silent){
+  if(!password || password.length < 6){ if(!silent) showToast('Le mot de passe doit contenir au moins 6 caractères'); return null; }
+  const authEmail = toAuthEmail(email);
   const { data: { session: authSession } } = await sb.auth.getSession();
   const requesterToken = authSession ? authSession.access_token : null;
   try{
     const res = await fetch('/.netlify/functions/create-account', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, full_name: fullName, role, school_id: targetSchoolId || session.schoolId, requesterToken })
+      body: JSON.stringify({ email: authEmail, password, full_name: fullName, role, school_id: targetSchoolId || session.schoolId, requesterToken })
     });
     if(!res.ok){
       const msg = await res.text();
-      showToast('Erreur : ' + msg);
+      if(!silent) showToast('Erreur : ' + msg);
       return null;
     }
     const result = await res.json();
-    showToast('Compte créé pour ' + fullName + ' — transmets-lui l\'e-mail et le mot de passe que tu viens de saisir');
+    if(!silent) showToast('Compte créé pour ' + fullName + ' — transmets-lui l\'identifiant et le mot de passe que tu viens de saisir');
     return result.id;
   }catch(e){
-    showToast('Erreur réseau — vérifiez que la fonction Netlify est bien déployée');
+    if(!silent) showToast('Erreur réseau — vérifiez que la fonction Netlify est bien déployée');
     return null;
   }
 }
@@ -1285,7 +1300,7 @@ async function syncAccountToAuth(userId, {email, full_name, password}){
   try{
     const res = await fetch('/.netlify/functions/manage-account', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'update', userId, email, full_name, password, requesterToken })
+      body: JSON.stringify({ action:'update', userId, email: email?toAuthEmail(email):undefined, full_name, password, requesterToken })
     });
     if(!res.ok){ showToast('Erreur : '+await res.text()); return false; }
     return true;
@@ -1319,11 +1334,19 @@ function comptesProfs(){
     (db.classes.map(c=>'<label class="f-check"><input type="checkbox" class="pf-cls" value="'+c.id+'"> '+c.name+'</label>').join('') || '<span class="empty">Créez d\'abord des classes</span>')+
   '</div></div>'+
   '<button class="btn-sm" style="margin-top:14px;" onclick="addProf()">Créer le compte</button></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Importer plusieurs '+teacherGenericLabel(false)+'s d\'un coup</h3></div>'+
+  '<div class="sub" style="margin-bottom:12px;">Vous avez déjà une liste en Excel (même désordonnée, avec ou sans e-mail) ? Importez-la directement — les noms et e-mails sont reconnus automatiquement. Tu peux aussi appliquer un code d\'accès commun à tout le monde, puis le modifier au cas par cas si besoin.</div>'+
+  '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">'+
+    '<button class="btn-sm ghost" onclick="downloadTemplate(\'profs\')">Télécharger le modèle Excel</button>'+
+    '<input type="file" id="import-profs-file" accept=".xlsx,.xls" onchange="previewImport(\'profs\')">'+
+  '</div>'+
+  '<div id="import-profs-preview"></div>'+
+  '</div>'+
   '<div class="selector-row"><select onchange="ui.profClassFilter=this.value; renderMain();">'+
     '<option value="">Toutes les classes</option>'+
     db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.profClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
   '</select></div>'+
-  '<div class="panel"><table><thead><tr><th>'+teacherGenericLabel(true)+'</th><th>Email</th><th>Matières</th><th>Classes</th><th></th></tr></thead><tbody>'+
+  '<div class="panel"><table><thead><tr><th>'+teacherGenericLabel(true)+'</th><th>Email / Identifiant</th><th>Matières</th><th>Classes</th><th></th></tr></thead><tbody>'+
   (visibleProfs.map(p=>{
     if(ui.editProf===p.id){
       return '<tr><td colspan="5"><div class="form-grid">'+
@@ -1394,6 +1417,14 @@ function comptesEleves(){
   pwFieldHTML('el-password')+
   '<div class="f-group"><label>Classe</label><select id="el-class">'+(db.classes.map(c=>'<option value="'+c.id+'">'+c.name+'</option>').join('') || '<option disabled>Aucune classe</option>')+'</select></div>'+
   '<button class="btn-sm" onclick="addStudent()">Ajouter</button></div></div>'+
+  '<div class="panel"><div class="panel-head"><h3>Importer plusieurs '+learnerLabel(false,true)+' d\'un coup</h3></div>'+
+  '<div class="sub" style="margin-bottom:12px;">Vous avez déjà une liste en Excel (même désordonnée, avec ou sans e-mail) ? Importez-la directement — les noms et e-mails sont reconnus automatiquement. Tu peux aussi appliquer un code d\'accès commun à tout le monde, puis le modifier au cas par cas si besoin.</div>'+
+  '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">'+
+    '<button class="btn-sm ghost" onclick="downloadTemplate(\'eleves\')">Télécharger le modèle Excel</button>'+
+    '<input type="file" id="import-eleves-file" accept=".xlsx,.xls" onchange="previewImport(\'eleves\')">'+
+  '</div>'+
+  '<div id="import-eleves-preview"></div>'+
+  '</div>'+
   (selCount>0 ? '<div class="panel" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--amber-bg);border-color:var(--gold);">'+
     '<b>'+selCount+' '+learnerLabel(false,selCount>1)+' sélectionné'+(selCount>1?'s':'')+'</b>'+
     '<select id="promote-class">'+db.classes.map(c=>'<option value="'+c.id+'">'+c.name+'</option>').join('')+'</select>'+
@@ -1440,6 +1471,222 @@ async function addStudent(){
   if(!id) return;
   db.students.push({id, name, email, classId});
   saveData(); renderMain();
+}
+
+/* ============================================================
+   IMPORT EN MASSE (Excel) — élèves/étudiants et professeurs
+   ============================================================ */
+function generateRandomPassword(){
+  const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  let pw = '';
+  for(let i=0;i<8;i++) pw += chars[Math.floor(Math.random()*chars.length)];
+  return pw;
+}
+function downloadTemplate(kind){
+  if(typeof XLSX === 'undefined'){ showToast('La bibliothèque Excel n\'a pas pu se charger'); return; }
+  const wb = XLSX.utils.book_new();
+  let rows;
+  if(kind==='eleves'){
+    rows = [
+      { 'Nom complet': 'Kouadio Affoué', 'Email': 'affoue.kouadio@exemple.ci', 'Classe': db.classes[0] ? db.classes[0].name : 'Nom exact de la classe', 'Mot de passe (optionnel)': '' },
+    ];
+  }else{
+    rows = [
+      { 'Nom complet': 'Aya N\'Guessan', 'Email': 'aya.nguessan@exemple.ci', 'Civilité (M ou Mme)': 'Mme', 'Matières (séparées par des virgules)': db.subjects[0] ? db.subjects[0].name : 'Nom exact de la matière', 'Classes (séparées par des virgules)': db.classes[0] ? db.classes[0].name : 'Nom exact de la classe', 'Mot de passe (optionnel)': '' },
+    ];
+  }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Modèle');
+  XLSX.writeFile(wb, (kind==='eleves' ? 'Modele-import-'+learnerLabel(false,true) : 'Modele-import-profs')+'.xlsx');
+  showToast('Modèle téléchargé — remplace la ligne d\'exemple par tes propres données, sans changer les en-têtes');
+}
+function findByNameLoose(list, name){
+  if(!name) return null;
+  const target = String(name).trim().toLowerCase();
+  return list.find(x=>x.name.trim().toLowerCase()===target) || null;
+}
+const IMPORT_KEYWORDS = {
+  name: ['nom','élève','eleve','étudiant','etudiant','professeur','prof','enseignant','name','apprenant','maître','maitre'],
+  email: ['mail','courriel'],
+  classe: ['classe','class','niveau'],
+  matiere: ['matière','matiere','subject','discipline'],
+};
+function looksLikeEmail(v){ return /\S+@\S+\.\S+/.test(String(v||'')); }
+function looksLikeName(v, alreadyUsed){
+  const s = String(v||'').trim();
+  if(!s || alreadyUsed) return false;
+  if(looksLikeEmail(s)) return false;
+  if(/^\d+([.,]\d+)?$/.test(s)) return false;
+  return /^[a-zA-ZÀ-ÖØ-öø-ÿ' \-.]{3,60}$/.test(s);
+}
+// Détecte automatiquement quelle colonne contient quoi, même sans en-têtes fiables
+// ou avec des colonnes dans le désordre — d'abord par mot-clé d'en-tête, puis par
+// le contenu lui-même (motif d'e-mail, apparence de nom...).
+function autoDetectColumns(headerRow, dataRows, purposes){
+  const numCols = Math.max(headerRow.length, ...dataRows.map(r=>r.length), 1);
+  const result = {};
+  purposes.forEach(p=>{
+    let found = -1;
+    for(let c=0;c<numCols;c++){
+      const h = String(headerRow[c]||'').toLowerCase();
+      if(IMPORT_KEYWORDS[p].some(k=>h.includes(k))){ found = c; break; }
+    }
+    result[p] = found;
+  });
+  if(result.email === -1){
+    let best=-1, bestScore=0;
+    for(let c=0;c<numCols;c++){
+      let score=0;
+      dataRows.forEach(r=>{ if(looksLikeEmail(r[c])) score++; });
+      if(score>bestScore){ bestScore=score; best=c; }
+    }
+    if(bestScore>0) result.email = best;
+  }
+  if(result.name === -1){
+    let best=-1, bestScore=0;
+    for(let c=0;c<numCols;c++){
+      if(c===result.email) continue;
+      let score=0;
+      dataRows.forEach(r=>{ if(looksLikeName(r[c], false)) score++; });
+      if(score>bestScore){ bestScore=score; best=c; }
+    }
+    if(bestScore>0) result.name = best;
+  }
+  return result;
+}
+async function previewImport(kind){
+  const input = document.getElementById('import-'+kind+'-file');
+  const file = input.files[0];
+  if(!file) return;
+  if(typeof XLSX === 'undefined'){ showToast('La bibliothèque Excel n\'a pas pu se charger'); return; }
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type:'array' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+  if(!raw.length){ showToast('Fichier vide'); return; }
+
+  // Le fichier a-t-il une vraie ligne d'en-tête, ou commence-t-il direct par des données
+  // (fichier "mélangé", copié-collé tel quel depuis un PDF) ?
+  const firstRow = raw[0].map(v=>String(v||''));
+  const allKeywords = Object.values(IMPORT_KEYWORDS).flat();
+  const firstRowHasKeyword = firstRow.some(v=>allKeywords.some(k=>v.toLowerCase().includes(k)));
+  const firstRowHasEmail = firstRow.some(v=>looksLikeEmail(v));
+  const hasRealHeader = firstRowHasKeyword && !firstRowHasEmail;
+
+  const headerRow = hasRealHeader ? firstRow : [];
+  const dataRows = hasRealHeader ? raw.slice(1) : raw;
+  const purposes = kind==='eleves' ? ['name','email','classe'] : ['name','email','classe','matiere'];
+  const cols = autoDetectColumns(headerRow, dataRows, purposes);
+
+  const parsed = dataRows.map(r=>{
+    const name = cols.name>=0 ? String(r[cols.name]||'').trim() : '';
+    const email = cols.email>=0 ? String(r[cols.email]||'').trim() : '';
+    if(kind==='eleves'){
+      const className = cols.classe>=0 ? String(r[cols.classe]||'').trim() : '';
+      const cls = findByNameLoose(db.classes, className);
+      const errors = [];
+      if(!name) errors.push('nom manquant');
+      if(className && !cls) errors.push('classe introuvable : "'+className+'"');
+      return { name, email, className, classId: cls?cls.id:null, password:'', errors };
+    }else{
+      const clsRaw = cols.classe>=0 ? String(r[cols.classe]||'') : '';
+      const subjRaw = cols.matiere>=0 ? String(r[cols.matiere]||'') : '';
+      const subjNames = subjRaw.split(/[,;/]/).map(s=>s.trim()).filter(Boolean);
+      const clsNames = clsRaw.split(/[,;/]/).map(s=>s.trim()).filter(Boolean);
+      const subjectIds = subjNames.map(n=>findByNameLoose(db.subjects,n)).filter(Boolean).map(s=>s.id);
+      const classIds = clsNames.map(n=>findByNameLoose(db.classes,n)).filter(Boolean).map(c=>c.id);
+      const errors = [];
+      if(!name) errors.push('nom manquant');
+      return { name, email, civilite:'M', subjectIds, classIds, password:'', errors };
+    }
+  }).filter(r=>r.name || r.email);
+
+  ui['importData_'+kind] = parsed;
+  renderImportPreview(kind);
+}
+function renderImportPreview(kind){
+  const parsed = ui['importData_'+kind] || [];
+  const validCount = parsed.filter(r=>!r.errors.length).length;
+  const el = document.getElementById('import-'+kind+'-preview');
+  el.innerHTML = '<div style="margin-top:14px;">'+
+    '<div class="sub" style="margin-bottom:10px;">'+validCount+' sur '+parsed.length+' ligne(s) reconnue(s) et prête(s) à importer'+(validCount<parsed.length?' — corrige les lignes en rouge (nom manquant) avant de continuer':'')+'.</div>'+
+    '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">'+
+      '<input id="common-pw-'+kind+'" placeholder="Code commun (ex. Ecole2026)" style="padding:8px 10px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;">'+
+      '<button class="btn-xs" onclick="applyCommonPassword(\''+kind+'\')">Appliquer à tous</button>'+
+      '<button class="btn-xs ghost" onclick="applyCommonPassword(\''+kind+'\', true)">Générer un code aléatoire par personne</button>'+
+    '</div>'+
+    '<table><thead><tr><th>Nom</th><th>Email</th><th>'+(kind==='eleves'?'Classe':'Matières / Classes')+'</th><th>Mot de passe</th><th>Statut</th></tr></thead><tbody>'+
+    parsed.map((r,i)=>'<tr'+(r.errors.length?' style="background:var(--red-bg);"':'')+'><td>'+r.name+'</td><td>'+(r.email||'<span style="color:var(--gray);">—</span>')+'</td>'+
+      '<td>'+(kind==='eleves' ? (r.className||'<span style="color:var(--gray);">—</span>') : (r.subjectIds.length+' matière(s), '+r.classIds.length+' classe(s)'))+'</td>'+
+      '<td><input id="imp-pw-'+kind+'-'+i+'" value="'+r.password+'" placeholder="mot de passe" style="width:120px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;" onchange="ui.importData_'+kind+'['+i+'].password=this.value;"></td>'+
+      '<td>'+(r.errors.length ? '<span class="tag red">'+r.errors.join(', ')+'</span>' : '<span class="tag green">OK</span>')+'</td></tr>').join('')+
+    '</tbody></table>'+
+    (validCount ? '<button class="btn-sm" style="margin-top:12px;" onclick="confirmImport(\''+kind+'\')">Importer les '+validCount+' ligne(s) valide(s)</button>' : '')+
+  '</div>';
+}
+function applyCommonPassword(kind, randomPerRow){
+  const parsed = ui['importData_'+kind] || [];
+  const common = document.getElementById('common-pw-'+kind).value.trim();
+  parsed.forEach(r=>{
+    r.password = randomPerRow ? generateRandomPassword() : (common || generateRandomPassword());
+  });
+  renderImportPreview(kind);
+}
+function slugifyUsername(name){
+  return name.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // enlève les accents
+    .replace(/[^a-z0-9]+/g,'.').replace(/^\.+|\.+$/g,'') || 'utilisateur';
+}
+function generateUniqueUsername(name, taken){
+  let base = slugifyUsername(name);
+  let candidate = base, i = 1;
+  while(taken.has(candidate)){ i++; candidate = base + i; }
+  taken.add(candidate);
+  return candidate;
+}
+async function confirmImport(kind){
+  const all = ui['importData_'+kind] || [];
+  const rows = all.filter(r=>!r.errors.length);
+  if(!rows.length) return;
+  const missingPw = rows.filter(r=>!r.password || r.password.length<6);
+  if(missingPw.length){
+    if(!confirm(missingPw.length+' ligne(s) n\'ont pas de mot de passe valide (6 caractères minimum) — un code aléatoire sera généré automatiquement pour elles. Continuer ?')) return;
+    missingPw.forEach(r=>r.password = generateRandomPassword());
+  }
+  if(!confirm('Créer '+rows.length+' compte(s) maintenant ? Cette opération peut prendre quelques minutes selon le nombre.')) return;
+  const el = document.getElementById('import-'+kind+'-preview');
+  const results = [];
+  const takenUsernames = new Set([...db.students, ...db.profs, ...db.parents].map(p=>(p.email||'').toLowerCase().split('@')[0]));
+  for(let i=0;i<rows.length;i++){
+    const r = rows[i];
+    el.innerHTML = '<div class="sub">Import en cours... '+(i+1)+' / '+rows.length+' ('+r.name+')</div>';
+    const generatedUsername = !r.email ? generateUniqueUsername(r.name, takenUsernames) : null;
+    const identifiant = r.email || generatedUsername;
+    const id = await createSchoolAccount(identifiant, r.name, kind==='eleves'?'eleve':'prof', null, r.password, true);
+    if(id){
+      if(kind==='eleves'){
+        db.students.push({id, name:r.name, email:identifiant, classId:r.classId});
+      }else{
+        db.profs.push({id, name:r.name, email:identifiant, civilite:r.civilite, subjectIds:r.subjectIds, classIds:r.classIds});
+      }
+      results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:r.password, statut:'Créé' });
+    }else{
+      results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:'—', statut:'Échec (voir message d\'erreur précédent)' });
+    }
+  }
+  await saveData();
+  ui['importData_'+kind] = null;
+  document.getElementById('import-'+kind+'-file').value = '';
+  renderMain();
+  downloadImportResults(results, kind);
+  showToast(results.filter(r=>r.statut==='Créé').length+' compte(s) créé(s) sur '+rows.length);
+}
+function downloadImportResults(results, kind){
+  if(typeof XLSX === 'undefined') return;
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(results);
+  XLSX.utils.book_append_sheet(wb, ws, 'Résultats');
+  XLSX.writeFile(wb, 'Identifiants-'+(kind==='eleves'?learnerLabel(false,true):'profs')+'-'+todayISO()+'.xlsx');
 }
 async function saveStudent(id){
   const s = db.students.find(x=>x.id===id);
