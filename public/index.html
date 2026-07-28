@@ -288,7 +288,8 @@ let ui = { adminTab:'overview', adminAcctTab:'profs', profTab:'appel', eleveTab:
            bulletinClass:null, bulletinPeriode:null,
            financeTab:'scolarite', financeClassFilter:'', payScolariteId:null, financeFactureType:'eleve',
            trancheClass:null, detailScolariteId:null, paySalaireId:null, relanceClassFilter:'',
-           manuelClass:null, manuelSubject:null, eleveManuelSubject:null };
+           manuelClass:null, manuelSubject:null, eleveManuelSubject:null,
+           stagesTab:'suivi', stageClassFilter:'', editStageId:null };
 
 function todayISO(){ const d=new Date(); return d.toISOString().slice(0,10); }
 function uid(p){ return p+'_'+Math.random().toString(36).slice(2,9); }
@@ -301,6 +302,7 @@ function emptySchoolData(){
     attendance: [], grades: [], evals: [], journal: [],
     events: [], messages: [], behavior: [], programme: [], notifications: [], bulletins: [], manuels: [],
     adminAccess: { founderId: null, principals: [] },
+    entreprises: [], stages: [],
     finance: { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [],
                tranches: [], personnel: [], paiementsSalaires: [], relances: [] }
   };
@@ -339,6 +341,7 @@ async function loadData(){
   if(!db.bulletins) db.bulletins=[];
   if(!db.manuels) db.manuels=[];
   if(!db.adminAccess) db.adminAccess = { founderId: null, principals: [] };
+  if(!db.entreprises) db.entreprises=[]; if(!db.stages) db.stages=[];
   if(!db.finance) db.finance = { scolarite: [], paiementsScolarite: [], factures: [], tresorerie: [], tranches: [], personnel: [], paiementsSalaires: [], relances: [] };
   if(!db.finance.tranches) db.finance.tranches=[]; if(!db.finance.personnel) db.finance.personnel=[];
   if(!db.finance.paiementsSalaires) db.finance.paiementsSalaires=[]; if(!db.finance.relances) db.finance.relances=[];
@@ -487,12 +490,12 @@ async function logout(){
 const TABS = {
   admin:[ ['overview','Tableau de bord','#C9952C'], ['classes','Classes','#2F6B4F'], ['subjects','Matières','#1B2A4A'],
           ['schedule',"Emplois du temps",'#2F6B4F'], ['comptes','Comptes','#B23A33'], ['presences','Présences','#B23A33'],
-          ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['finances','Finances','#2F6B4F'], ['programme','Programme','#A87820'], ['manuel','Manuel','#1B2A4A'], ['agenda','Agenda','#1B2A4A'],
+          ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['finances','Finances','#2F6B4F'], ['stages','Stages','#6D5AA6'], ['programme','Programme','#A87820'], ['manuel','Manuel','#1B2A4A'], ['agenda','Agenda','#1B2A4A'],
           ['comportement','Comportement','#A87820'], ['messagerie','Messagerie','#2E4271'], ['archives','Archives','#6B6B63'] ],
   prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
          ['programme','Programme annuel','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
          ['messagerie','Messages','#2E4271'] ],
-  eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['absences','Absences','#B23A33'], ['notes','Mes notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
+  eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['absences','Absences','#B23A33'], ['notes','Mes notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'], ['stages','Mon stage','#6D5AA6'],
           ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
           ['messagerie','Messages','#2E4271'] ],
   parent:[ ['absences','Absences','#B23A33'], ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
@@ -572,6 +575,7 @@ function renderAdmin(){
   if(ui.adminTab==='notes') return adminNotes();
   if(ui.adminTab==='bulletins') return hasAccess('bulletins') ? adminBulletins() : accessDeniedHTML();
   if(ui.adminTab==='finances') return hasAccess('finances') ? adminFinances() : accessDeniedHTML();
+  if(ui.adminTab==='stages') return adminStages();
   if(ui.adminTab==='programme') return adminProgramme();
   if(ui.adminTab==='manuel') return adminManuel();
   if(ui.adminTab==='agenda') return adminAgenda();
@@ -729,7 +733,7 @@ function buildArchiveReportData(a){
     const sub = db.subjects.find(s=>s.id===ev.subjectId);
     a.grades.filter(g=>g.evalId===ev.id && g.value!==undefined && g.value!==null).forEach(g=>{
       const stu = db.students.find(s=>s.id===g.studentId);
-      notesRows.push({ Eleve: stu?stu.name:'(compte supprimé)', Classe: cls?cls.name:'', Matiere: sub?sub.name:'', Evaluation: ev.label, Date: ev.date, Note: g.value });
+      notesRows.push({ Eleve: stu?stu.name:'(compte supprimé)', Classe: cls?cls.name:'', Matiere: sub?sub.name:'', Evaluation: ev.label, Date: ev.date, Note: g.value, Bareme: ev.bareme||20 });
     });
   });
   const attendanceRows = [];
@@ -855,12 +859,27 @@ function classProfsText(classId){
   });
   return Object.keys(bySubject).map(subName=>subName+' : '+bySubject[subName].join(', ')).join('  |  ');
 }
+function normalizedGrade(evalObj, rawValue){
+  const bareme = (evalObj && evalObj.bareme) || 20;
+  return rawValue * (20/bareme);
+}
+// Une note manquante compte automatiquement comme 0 dès que la date de
+// l'évaluation est passée (même si une justification a été envoyée — elle
+// reste visible pour le prof, mais ne change rien au calcul tant qu'il n'a
+// pas saisi une vraie note). Une évaluation dont la date n'est pas encore
+// arrivée est simplement exclue du calcul (pas encore due).
+function effectiveGradeValue(evalObj, grade){
+  if(grade && grade.value!==undefined && grade.value!==null) return normalizedGrade(evalObj, grade.value);
+  if(evalObj.date && evalObj.date <= todayISO()) return 0;
+  return null;
+}
 function studentSubjectAverage(studentId, classId, subjectId){
   const evals = db.evals.filter(e=>e.classId===classId && e.subjectId===subjectId);
   let sum=0, coefSum=0;
   evals.forEach(ev=>{
     const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===studentId);
-    if(g && g.value!==undefined && g.value!==null){ sum += g.value*ev.coef; coefSum += ev.coef; }
+    const val = effectiveGradeValue(ev, g);
+    if(val!==null){ sum += val*ev.coef; coefSum += ev.coef; }
   });
   return coefSum ? sum/coefSum : null;
 }
@@ -899,7 +918,7 @@ function buildYearReportData(){
         db.evals.filter(e=>e.classId===c.id && e.subjectId===sub.id).forEach(ev=>{
           const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===s.id);
           if(g && g.value!==undefined && g.value!==null){
-            notesDetailRows.push({ Niveau: c.level, Classe: c.name, Matière: sub.name, Professeur: profTeaching(c.id,sub.id), Élève: s.name, Évaluation: ev.label, Date: ev.date, Coefficient: ev.coef, Note: g.value });
+            notesDetailRows.push({ Niveau: c.level, Classe: c.name, Matière: sub.name, Professeur: profTeaching(c.id,sub.id), Élève: s.name, Évaluation: ev.label, Date: ev.date, Coefficient: ev.coef, Note: g.value, Barème: ev.bareme||20 });
           }
         });
       });
@@ -1187,7 +1206,12 @@ function isPrincipal(id){
   const access = db.adminAccess;
   return !!(access && access.principals && access.principals.includes(id));
 }
+const STAGE_ELIGIBLE_TYPES = ['Institut de formation','Grande école','Université'];
+function schoolHasStages(){
+  return STAGE_ELIGIBLE_TYPES.includes(db.school.type);
+}
 function hasAccess(section){
+  if(section==='stages') return schoolHasStages();
   if(session.role!=='admin') return true;
   if(section!=='bulletins' && section!=='finances') return true;
   return isPrincipal(session.acctId);
@@ -1756,8 +1780,15 @@ function comptesParents(){
   '<div class="form-grid"><div class="f-group"><label>Nom complet</label><input id="pa-name" placeholder="Ex. M. Yao Konan"></div>'+
   '<div class="f-group"><label>Email</label><input id="pa-email" placeholder="email@gmail.com"></div>'+
   pwFieldHTML('pa-password')+'</div>'+
-  '<div style="margin-top:12px;"><label class="field-label" style="margin-top:0;">Enfant(s) lié(s)</label><div class="chips">'+
-  (db.students.map(s=>'<label class="f-check"><input type="checkbox" class="pa-child" value="'+s.id+'"> '+s.name+'</label>').join('') || '<span class="empty">Créez d\'abord des '+learnerLabel(false,true)+'</span>')+
+  '<div style="margin-top:12px;"><label class="field-label" style="margin-top:0;">Enfant(s) lié(s)</label>'+
+  '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'+
+    '<select id="pa-child-classfilter" onchange="filterChildCheckboxes(\'pa-children-list\',\'pa-child-classfilter\',\'pa-child-search\')">'+
+      '<option value="">Toutes les classes</option>'+db.classes.map(c=>'<option value="'+c.id+'">'+c.name+'</option>').join('')+
+    '</select>'+
+    '<input id="pa-child-search" placeholder="Rechercher un nom..." oninput="filterChildCheckboxes(\'pa-children-list\',\'pa-child-classfilter\',\'pa-child-search\')" style="flex:1;min-width:160px;padding:8px 10px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;">'+
+  '</div>'+
+  '<div class="chips" id="pa-children-list">'+
+  (db.students.map(s=>'<label class="f-check" data-classid="'+s.classId+'" data-name="'+s.name.toLowerCase()+'"><input type="checkbox" class="pa-child" value="'+s.id+'"> '+s.name+'</label>').join('') || '<span class="empty">Créez d\'abord des '+learnerLabel(false,true)+'</span>')+
   '</div></div><button class="btn-sm" style="margin-top:14px;" onclick="addParent()">Créer le compte</button></div>'+
   '<div class="panel"><div class="panel-head"><h3>Importer plusieurs parents d\'un coup</h3></div>'+
   '<div class="sub" style="margin-bottom:12px;">Vous avez déjà une liste en Excel (même désordonnée, avec ou sans e-mail) ? Importez-la directement — les noms, e-mails et enfants liés sont reconnus automatiquement. Tu peux aussi appliquer un code d\'accès commun à tout le monde, puis le modifier au cas par cas si besoin.</div>'+
@@ -1779,8 +1810,15 @@ function comptesParents(){
         '<div class="f-group"><label>Email</label><input id="epa-email" value="'+p.email+'"></div>'+
         pwFieldHTML('epa-password')+'</div>'+
         '<div style="font-size:12px;color:var(--gray);margin-top:-6px;margin-bottom:6px;">Laisser le mot de passe vide pour ne pas le changer.</div>'+
-        '<div style="margin-top:10px;"><label class="field-label" style="margin-top:0;">Enfants</label><div class="chips">'+
-        db.students.map(s=>'<label class="f-check"><input type="checkbox" class="epa-child" value="'+s.id+'" '+(p.studentIds.includes(s.id)?'checked':'')+'> '+s.name+'</label>').join('')+'</div></div>'+
+        '<div style="margin-top:10px;"><label class="field-label" style="margin-top:0;">Enfants</label>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'+
+          '<select id="epa-child-classfilter-'+p.id+'" onchange="filterChildCheckboxes(\'epa-children-list-'+p.id+'\',\'epa-child-classfilter-'+p.id+'\',\'epa-child-search-'+p.id+'\')">'+
+            '<option value="">Toutes les classes</option>'+db.classes.map(c=>'<option value="'+c.id+'">'+c.name+'</option>').join('')+
+          '</select>'+
+          '<input id="epa-child-search-'+p.id+'" placeholder="Rechercher un nom..." oninput="filterChildCheckboxes(\'epa-children-list-'+p.id+'\',\'epa-child-classfilter-'+p.id+'\',\'epa-child-search-'+p.id+'\')" style="flex:1;min-width:160px;padding:8px 10px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;">'+
+        '</div>'+
+        '<div class="chips" id="epa-children-list-'+p.id+'">'+
+        db.students.map(s=>'<label class="f-check" data-classid="'+s.classId+'" data-name="'+s.name.toLowerCase()+'"><input type="checkbox" class="epa-child" value="'+s.id+'" '+(p.studentIds.includes(s.id)?'checked':'')+'> '+s.name+'</label>').join('')+'</div></div>'+
         '<div style="margin-top:12px;display:flex;gap:8px;"><button class="btn-sm" onclick="saveParent(\''+p.id+'\')">Enregistrer</button><button class="btn-sm ghost" onclick="ui.editParent=null;renderMain();">Annuler</button></div>'+
         '</td></tr>';
     }
@@ -1788,6 +1826,15 @@ function comptesParents(){
     '<td><button class="edit-btn" onclick="ui.editParent=\''+p.id+'\';renderMain();">Modifier</button><button class="del-btn" onclick="removeParent(\''+p.id+'\')">Supprimer</button></td></tr>';
   }).join('') || '<tr><td colspan="4" class="empty">Aucun parent.</td></tr>')+
   '</tbody></table></div>';
+}
+function filterChildCheckboxes(listId, classFilterId, searchId){
+  const classVal = document.getElementById(classFilterId).value;
+  const searchVal = document.getElementById(searchId).value.trim().toLowerCase();
+  document.querySelectorAll('#'+listId+' .f-check').forEach(label=>{
+    const matchesClass = !classVal || label.dataset.classid===classVal;
+    const matchesSearch = !searchVal || label.dataset.name.includes(searchVal);
+    label.style.display = (matchesClass && matchesSearch) ? '' : 'none';
+  });
 }
 async function addParent(){
   const name = document.getElementById('pa-name').value.trim();
@@ -1850,7 +1897,9 @@ function adminPresences(){
 function adminNotes(){
   if(!ui.notesAdminClass && db.classes.length) ui.notesAdminClass = db.classes[0].id;
   if(!ui.notesAdminPeriode) ui.notesAdminPeriode = 'Toutes';
-  const students = db.students.filter(s=>s.classId===ui.notesAdminClass);
+  if(ui.notesAdminSearch===undefined) ui.notesAdminSearch = '';
+  const search = ui.notesAdminSearch.trim().toLowerCase();
+  const students = db.students.filter(s=>s.classId===ui.notesAdminClass && (!search || s.name.toLowerCase().includes(search)));
   return '<div class="page-head"><div><h1>Notes</h1><div class="sub">Moyennes générées automatiquement à partir des notes saisies par les professeurs</div></div></div>'+
   '<div class="selector-row"><select onchange="ui.notesAdminClass=this.value; renderMain();">'+
     db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.notesAdminClass?'selected':'')+'>'+c.name+'</option>').join('')+
@@ -1858,8 +1907,9 @@ function adminNotes(){
   '<select onchange="ui.notesAdminPeriode=this.value; renderMain();">'+
     '<option value="Toutes" '+(ui.notesAdminPeriode==='Toutes'?'selected':'')+'>Toute l\'année</option>'+
     getPeriodes().map(p=>'<option value="'+p+'" '+(ui.notesAdminPeriode===p?'selected':'')+'>'+p+'</option>').join('')+
-  '</select></div>'+
-  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>Élève</th>'+
+  '</select>'+
+  '<input value="'+ui.notesAdminSearch+'" oninput="ui.notesAdminSearch=this.value; renderMain();" placeholder="Rechercher un '+learnerLabel(false,false)+'..." style="flex:1;min-width:180px;padding:8px 10px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;"></div>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>'+learnerLabel(true,false)+'</th>'+
     db.subjects.map(s=>'<th>'+s.name+'</th>').join('')+'<th>Moyenne générale</th></tr></thead><tbody>'+
   (students.map(stu=>{
     let subjectAverages = [];
@@ -1869,14 +1919,15 @@ function adminNotes(){
       let sum=0, coefSum=0;
       evals.forEach(ev=>{
         const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===stu.id);
-        if(g && g.value!==undefined && g.value!==null){ sum += g.value*ev.coef; coefSum += ev.coef; }
+        const val = effectiveGradeValue(ev, g);
+        if(val!==null){ sum += val*ev.coef; coefSum += ev.coef; }
       });
       if(coefSum){ const moy = sum/coefSum; subjectAverages.push(moy); return '<td class="mono">'+moy.toFixed(2)+'</td>'; }
       return '<td class="mono">—</td>';
     }).join('');
     const general = subjectAverages.length ? (subjectAverages.reduce((a,b)=>a+b,0)/subjectAverages.length).toFixed(2) : '—';
     return '<tr><td><b>'+stu.name+'</b></td>'+cells+'<td class="mono"><b>'+general+'</b>'+(general!=='—'?'/20':'')+'</td></tr>';
-  }).join('') || '<tr><td colspan="'+(db.subjects.length+2)+'" class="empty">Aucun élève dans cette classe.</td></tr>')+
+  }).join('') || '<tr><td colspan="'+(db.subjects.length+2)+'" class="empty">Aucun '+learnerLabel(false,false)+' ne correspond.</td></tr>')+
   '</tbody></table></div>';
 }
 
@@ -1886,19 +1937,25 @@ function studentSubjectAverageForPeriod(studentId, classId, subjectId, periode){
   let sum=0, coefSum=0;
   evals.forEach(ev=>{
     const g = db.grades.find(x=>x.evalId===ev.id && x.studentId===studentId);
-    if(g && g.value!==undefined && g.value!==null){ sum += g.value*ev.coef; coefSum += ev.coef; }
+    const val = effectiveGradeValue(ev, g);
+    if(val!==null){ sum += val*ev.coef; coefSum += ev.coef; }
   });
   return coefSum ? sum/coefSum : null;
 }
 function adminBulletins(){
   if(!ui.bulletinClass && db.classes.length) ui.bulletinClass = db.classes[0].id;
   if(!ui.bulletinPeriode) ui.bulletinPeriode = getPeriodes()[0];
-  const students = db.students.filter(s=>s.classId===ui.bulletinClass);
+  const allStudents = db.students.filter(s=>s.classId===ui.bulletinClass);
+  if(ui.bulletinSearch===undefined) ui.bulletinSearch = '';
+  const search = ui.bulletinSearch.trim().toLowerCase();
+  const students = allStudents.filter(s=>!search || s.name.toLowerCase().includes(search));
   const alreadyPublished = (db.bulletins||[]).filter(b=>b.classId===ui.bulletinClass && b.periode===ui.bulletinPeriode && b.year===db.school.year);
+  const publishedVisible = search ? alreadyPublished.filter(b=>b.studentName.toLowerCase().includes(search)) : alreadyPublished;
   return '<div class="page-head"><div><h1>Bulletins</h1><div class="sub">Publiez les bulletins de fin de période — '+learnerLabel(false,true)+' et parents pourront les consulter et les télécharger en PDF</div></div></div>'+
   '<div class="selector-row">'+
     '<select onchange="ui.bulletinClass=this.value; renderMain();">'+db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.bulletinClass?'selected':'')+'>'+c.name+'</option>').join('')+'</select>'+
     '<select onchange="ui.bulletinPeriode=this.value; renderMain();">'+getPeriodes().map(p=>'<option value="'+p+'" '+(p===ui.bulletinPeriode?'selected':'')+'>'+p+'</option>').join('')+'</select>'+
+    '<input value="'+ui.bulletinSearch+'" oninput="ui.bulletinSearch=this.value; renderMain();" placeholder="Rechercher un nom..." style="flex:1;min-width:180px;padding:8px 10px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;">'+
   '</div>'+
   '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Aperçu avant publication</h3></div>'+
   '<table><thead><tr><th>'+learnerLabel(true,false)+'</th>'+db.subjects.map(s=>'<th>'+s.name+'</th>').join('')+'<th>Moyenne</th><th>Appréciation</th></tr></thead><tbody>'+
@@ -1913,13 +1970,13 @@ function adminBulletins(){
     const existing = alreadyPublished.find(b=>b.studentId===stu.id);
     return '<tr><td><b>'+stu.name+'</b></td>'+cells+'<td class="mono"><b>'+moyGen+'</b></td>'+
       '<td><input id="appr-'+stu.id+'" placeholder="Optionnel" value="'+(existing?(existing.appreciation||''):'')+'" style="width:170px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;"></td></tr>';
-  }).join('') || '<tr><td colspan="'+(db.subjects.length+3)+'" class="empty">Aucun '+learnerLabel(false,false)+' dans cette classe.</td></tr>')+
+  }).join('') || '<tr><td colspan="'+(db.subjects.length+3)+'" class="empty">Aucun '+learnerLabel(false,false)+' ne correspond.</td></tr>')+
   '</tbody></table>'+
   '<button class="btn-sm" style="margin-top:14px;" onclick="publishBulletins()">Publier les bulletins de cette classe</button>'+
   '</div>'+
-  (alreadyPublished.length ? '<div class="panel"><div class="panel-head"><h3>Déjà publiés — '+ui.bulletinPeriode+'</h3></div>'+
+  (publishedVisible.length ? '<div class="panel"><div class="panel-head"><h3>Déjà publiés — '+ui.bulletinPeriode+'</h3></div>'+
     '<table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Moyenne générale</th><th>Publié le</th><th></th></tr></thead><tbody>'+
-    alreadyPublished.map(b=>'<tr><td>'+b.studentName+'</td><td class="mono">'+b.moyenneGenerale+'</td><td>'+b.publishedAt+'</td>'+
+    publishedVisible.map(b=>'<tr><td>'+b.studentName+'</td><td class="mono">'+b.moyenneGenerale+'</td><td>'+b.publishedAt+'</td>'+
       '<td><button class="btn-xs" onclick="downloadBulletinPDF(\''+b.id+'\')">Télécharger</button> <button class="del-btn" onclick="deleteBulletin(\''+b.id+'\')">Supprimer</button></td></tr>').join('')+
     '</tbody></table></div>' : '');
 }
@@ -1936,8 +1993,10 @@ async function publishBulletins(){
       return { name: sub.name, moyenne: avg!==null ? avg.toFixed(2) : null };
     });
     const moyGen = subjAvgs.length ? (subjAvgs.reduce((a,b)=>a+b,0)/subjAvgs.length).toFixed(2) : '—';
+    const existingBulletin = db.bulletins.find(b=>b.studentId===stu.id && b.classId===ui.bulletinClass && b.periode===ui.bulletinPeriode && b.year===db.school.year);
     const apprEl = document.getElementById('appr-'+stu.id);
-    const appreciation = apprEl ? apprEl.value.trim() : '';
+    // Si la ligne n'est plus affichée (filtrée par la recherche), on garde l'appréciation déjà enregistrée plutôt que de l'effacer.
+    const appreciation = apprEl ? apprEl.value.trim() : (existingBulletin ? existingBulletin.appreciation : '');
     db.bulletins = db.bulletins.filter(b=>!(b.studentId===stu.id && b.classId===ui.bulletinClass && b.periode===ui.bulletinPeriode && b.year===db.school.year));
     db.bulletins.push({
       id: uid('bul'), studentId: stu.id, classId: ui.bulletinClass, periode: ui.bulletinPeriode, year: db.school.year,
@@ -2886,25 +2945,32 @@ function profNotes(){
   '<div class="form-grid"><div class="f-group"><label>Intitulé</label><input id="ev-label" placeholder="Ex. Devoir surveillé 1"></div>'+
   '<div class="f-group"><label>Date</label><input id="ev-date" type="date" value="'+todayISO()+'"></div>'+
   '<div class="f-group"><label>Coefficient</label><input id="ev-coef" type="number" min="1" value="1" style="width:80px;"></div>'+
+  '<div class="f-group"><label>Barème</label><select id="ev-bareme"><option value="20">Note sur 20</option><option value="10">Note sur 10</option></select></div>'+
   '<div class="f-group"><label>Période</label><select id="ev-periode">'+getPeriodes().map(p=>'<option value="'+p+'" '+(p===ui.profNotesPeriode?'selected':'')+'>'+p+'</option>').join('')+'</select></div>'+
   '<button class="btn-sm" onclick="addEval()">Créer</button></div></div>'+
   '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Saisie des notes</h3>'+
     '<select onchange="ui.profNotesPeriode=this.value; renderMain();">'+getPeriodes().map(p=>'<option value="'+p+'" '+(p===ui.profNotesPeriode?'selected':'')+'>'+p+'</option>').join('')+'</select>'+
   '</div>'+
+  '<div class="sub" style="margin-bottom:8px;">La moyenne est toujours ramenée sur 20, même si certaines évaluations sont notées sur 10.</div>'+
   (evals.length===0 ? '<div class="empty">Aucune évaluation pour '+ui.profNotesPeriode+'. Créez-en une pour commencer la saisie.</div>' :
   '<table><thead><tr><th>Élève</th>'+
-    evals.map(e=>'<th>'+e.label+'<br><span style="font-weight:400;text-transform:none;">'+e.date+' · coef '+e.coef+'</span>'+
+    evals.map(e=>'<th>'+e.label+'<br><span style="font-weight:400;text-transform:none;">'+e.date+' · coef '+e.coef+' · /'+(e.bareme||20)+'</span>'+
       '<button class="del-btn" style="display:block;margin-top:3px;" onclick="removeEval(\''+e.id+'\')">Supprimer</button></th>').join('')+
     '<th>Moyenne</th></tr></thead><tbody>'+
   students.map(s=>{
     let sum=0, coefSum=0;
     const cells = evals.map(e=>{
       const g = db.grades.find(x=>x.evalId===e.id && x.studentId===s.id);
-      const val = g && g.value!==undefined && g.value!==null ? g.value : '';
-      if(val!==''){ sum += val*e.coef; coefSum += e.coef; }
+      const hasValue = g && g.value!==undefined && g.value!==null;
+      const isPastDue = !hasValue && e.date && e.date<=todayISO();
+      const val = hasValue ? g.value : (isPastDue ? 0 : '');
+      const bareme = e.bareme||20;
+      const effVal = effectiveGradeValue(e, g);
+      if(effVal!==null){ sum += effVal*e.coef; coefSum += e.coef; }
       const just = g && g.justification ? ' title="Justification : '+g.justification.replace(/"/g,'')+'" style="border-color:var(--gold);"' : '';
-      return '<td><input class="mono" '+just+' style="width:54px;padding:5px 6px;border:1.5px solid var(--line);border-radius:6px;" type="number" min="0" max="20" step="0.5" value="'+val+'" onchange="setGrade(\''+e.id+'\',\''+s.id+'\',this.value)">'+
-        (g && g.justification ? '<div style="font-size:10.5px;color:var(--gold-dark);margin-top:2px;">justifié</div>' : '')+'</td>';
+      return '<td><input class="mono" '+just+' style="width:54px;padding:5px 6px;border:1.5px solid var(--line);border-radius:6px;" type="number" min="0" max="'+bareme+'" step="0.5" value="'+val+'" onchange="setGrade(\''+e.id+'\',\''+s.id+'\',this.value)">'+
+        '<span style="font-size:10.5px;color:var(--gray);">/'+bareme+'</span>'+
+        (g && g.justification ? '<div style="font-size:10.5px;color:var(--gold-dark);margin-top:2px;">justifié <button class="del-btn" style="font-size:9.5px;padding:1px 5px;" onclick="clearJustification(\''+e.id+'\',\''+s.id+'\')">×</button></div>' : '')+'</td>';
     }).join('');
     const moy = coefSum ? (sum/coefSum).toFixed(2) : '—';
     return '<tr><td><b>'+s.name+'</b></td>'+cells+'<td class="mono"><b>'+moy+'</b>'+(moy!=='—'?'/20':'')+'</td></tr>';
@@ -2915,9 +2981,10 @@ function addEval(){
   const label = document.getElementById('ev-label').value.trim();
   const date = document.getElementById('ev-date').value || todayISO();
   const coef = Number(document.getElementById('ev-coef').value) || 1;
+  const bareme = Number(document.getElementById('ev-bareme').value) || 20;
   const periode = document.getElementById('ev-periode').value;
   if(!label) return showToast('Indiquez un intitulé');
-  db.evals.push({id:uid('ev'), classId:ui.profClass, subjectId:ui.profSubject, label, date, coef, periode});
+  db.evals.push({id:uid('ev'), classId:ui.profClass, subjectId:ui.profSubject, label, date, coef, bareme, periode});
   saveData(); renderMain(); showToast('Évaluation créée — saisissez les notes, chaque étudiant la verra sur son compte');
 }
 function removeEval(evalId){
@@ -2926,8 +2993,16 @@ function removeEval(evalId){
   db.grades = db.grades.filter(g=>g.evalId!==evalId);
   saveData(); renderMain(); showToast('Évaluation supprimée');
 }
+function clearJustification(evalId, studentId){
+  if(!confirm('Supprimer cette justification ? La case redeviendra "Non noté".')) return;
+  const g = db.grades.find(x=>x.evalId===evalId && x.studentId===studentId);
+  if(g) g.justification = null;
+  saveData(); renderMain();
+}
 function setGrade(evalId, studentId, value){
-  value = value==='' ? undefined : Math.max(0, Math.min(20, Number(value)));
+  const ev = db.evals.find(e=>e.id===evalId);
+  const bareme = (ev && ev.bareme) || 20;
+  value = value==='' ? undefined : Math.max(0, Math.min(bareme, Number(value)));
   let g = db.grades.find(x=>x.evalId===evalId && x.studentId===studentId);
   if(!g){ g = {id:uid('g'), evalId, studentId, value:undefined, justification:null}; db.grades.push(g); }
   g.value = value;
@@ -3064,6 +3139,178 @@ function eleveManuel(stu){
   '</div>';
 }
 
+/* ============================================================
+   STAGES & ALTERNANCE (Institut de formation / Grande école / Université)
+   ============================================================ */
+const STAGE_STATUTS = { recherche:'En recherche', confirme:'Confirmé', en_cours:'En cours', termine:'Terminé' };
+function adminStages(){
+  if(ui.stagesTab===undefined) ui.stagesTab='suivi';
+  return '<div class="page-head"><div><h1>Stages</h1><div class="sub">Entreprises partenaires et suivi des stages des '+learnerLabel(false,true)+'</div></div></div>'+
+  '<div class="subtabs">'+
+    '<button class="subtab '+(ui.stagesTab==='suivi'?'active':'')+'" onclick="ui.stagesTab=\'suivi\';renderMain();">Suivi des stages</button>'+
+    '<button class="subtab '+(ui.stagesTab==='entreprises'?'active':'')+'" onclick="ui.stagesTab=\'entreprises\';renderMain();">Entreprises partenaires</button>'+
+  '</div>'+
+  (ui.stagesTab==='entreprises' ? adminEntreprises() : adminSuiviStages());
+}
+
+/* ---------- ENTREPRISES PARTENAIRES ---------- */
+function adminEntreprises(){
+  const list = db.entreprises.slice().sort((a,b)=>a.nom.localeCompare(b.nom));
+  return '<div class="panel"><div class="panel-head"><h3>Ajouter une entreprise</h3></div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>Nom</label><input id="ent-nom" placeholder="Ex. Orange Côte d\'Ivoire"></div>'+
+    '<div class="f-group"><label>Secteur</label><input id="ent-secteur" placeholder="Ex. Télécommunications"></div>'+
+    '<div class="f-group"><label>Contact (nom)</label><input id="ent-contact" placeholder="Ex. M. Kouassi"></div>'+
+    '<div class="f-group"><label>Téléphone</label><input id="ent-tel" placeholder="Ex. 07 00 00 00 00"></div>'+
+    '<div class="f-group"><label>Email</label><input id="ent-email" placeholder="Ex. rh@entreprise.ci"></div>'+
+    '<div class="f-group"><label>Adresse</label><input id="ent-adresse" placeholder="Ex. Abidjan, Plateau"></div>'+
+    '<button class="btn-sm" onclick="addEntreprise()">Ajouter</button>'+
+  '</div></div>'+
+  '<div class="panel"><table><thead><tr><th>Entreprise</th><th>Secteur</th><th>Contact</th><th>Téléphone</th><th>Email</th><th></th></tr></thead><tbody>'+
+  (list.map(e=>'<tr><td><b>'+e.nom+'</b></td><td>'+(e.secteur||'—')+'</td><td>'+(e.contact||'—')+'</td><td class="mono">'+(e.telephone||'—')+'</td><td>'+(e.email||'—')+'</td>'+
+    '<td><button class="del-btn" onclick="removeEntreprise(\''+e.id+'\')">Supprimer</button></td></tr>').join('') || '<tr><td colspan="6" class="empty">Aucune entreprise enregistrée.</td></tr>')+
+  '</tbody></table></div>';
+}
+function addEntreprise(){
+  const nom = document.getElementById('ent-nom').value.trim();
+  if(!nom) return showToast('Indiquez un nom d\'entreprise');
+  db.entreprises.push({
+    id: uid('ent'), nom,
+    secteur: document.getElementById('ent-secteur').value.trim(),
+    contact: document.getElementById('ent-contact').value.trim(),
+    telephone: document.getElementById('ent-tel').value.trim(),
+    email: document.getElementById('ent-email').value.trim(),
+    adresse: document.getElementById('ent-adresse').value.trim(),
+  });
+  saveData(); renderMain(); showToast('Entreprise ajoutée');
+}
+function removeEntreprise(id){
+  if(!confirm('Supprimer cette entreprise ? Les stages déjà liés resteront mais ne seront plus rattachés à un nom d\'entreprise.')) return;
+  db.entreprises = db.entreprises.filter(e=>e.id!==id);
+  saveData(); renderMain();
+}
+
+/* ---------- SUIVI DES STAGES ---------- */
+function adminSuiviStages(){
+  if(ui.stageClassFilter===undefined) ui.stageClassFilter='';
+  const stages = db.stages.filter(s=>!ui.stageClassFilter || s.classId===ui.stageClassFilter).slice().sort((a,b)=>(b.dateDebut||'').localeCompare(a.dateDebut||''));
+  const enCours = db.stages.filter(s=>s.statut==='en_cours').length;
+  const enRecherche = db.stages.filter(s=>s.statut==='recherche').length;
+  return '<div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">'+
+    '<div class="stat-card"><div class="n">'+db.stages.length+'</div><div class="l">Stages suivis</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--green);">'+enCours+'</div><div class="l">En cours</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--red);">'+enRecherche+'</div><div class="l">En recherche d\'entreprise</div></div>'+
+    '<div class="stat-card"><div class="n">'+db.entreprises.length+'</div><div class="l">Entreprises partenaires</div></div>'+
+  '</div>'+
+  '<div class="panel"><div class="panel-head"><h3>Enregistrer un stage</h3></div>'+
+  '<div class="form-grid">'+
+    '<div class="f-group"><label>'+learnerLabel(true,false)+'</label><select id="stg-student">'+db.students.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('')+'</select></div>'+
+    '<div class="f-group"><label>Entreprise</label><select id="stg-entreprise"><option value="">— Aucune (à définir) —</option>'+db.entreprises.map(e=>'<option value="'+e.id+'">'+e.nom+'</option>').join('')+'</select></div>'+
+    '<div class="f-group"><label>Maître de stage (entreprise)</label><input id="stg-maitre" placeholder="Ex. Mme Diallo, RH"></div>'+
+    '<div class="f-group"><label>Tuteur pédagogique</label><select id="stg-tuteur"><option value="">— Non désigné —</option>'+db.profs.map(p=>'<option value="'+p.id+'">'+p.name+'</option>').join('')+'</select></div>'+
+    '<div class="f-group"><label>Date de début</label><input id="stg-debut" type="date" onchange="autoFillStageFin()"></div>'+
+    '<div class="f-group"><label>Durée</label><select id="stg-duree" onchange="autoFillStageFin()"><option value="2">2 mois</option><option value="3" selected>3 mois</option><option value="">Personnalisée</option></select></div>'+
+    '<div class="f-group"><label>Date de fin</label><input id="stg-fin" type="date"></div>'+
+    '<div class="f-group"><label>Statut</label><select id="stg-statut">'+Object.entries(STAGE_STATUTS).map(([k,v])=>'<option value="'+k+'">'+v+'</option>').join('')+'</select></div>'+
+    '<button class="btn-sm" onclick="addStage()">Enregistrer</button>'+
+  '</div></div>'+
+  '<div class="selector-row"><select onchange="ui.stageClassFilter=this.value; renderMain();">'+
+    '<option value="">Toutes les classes</option>'+
+    db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.stageClassFilter?'selected':'')+'>'+c.name+'</option>').join('')+
+  '</select></div>'+
+  '<div class="panel" style="overflow-x:auto;"><table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Entreprise</th><th>Tuteur</th><th>Période</th><th>Statut</th><th>Convention</th><th></th></tr></thead><tbody>'+
+  (stages.map(s=>{
+    const stu = db.students.find(x=>x.id===s.studentId);
+    const ent = db.entreprises.find(x=>x.id===s.entrepriseId);
+    const tuteur = db.profs.find(x=>x.id===s.tuteurProfId);
+    const statutColor = s.statut==='en_cours'?'green':s.statut==='termine'?'':s.statut==='recherche'?'red':'amber';
+    return '<tr><td><b>'+(stu?stu.name:'(compte supprimé)')+'</b></td><td>'+(ent?ent.nom:'<span style="color:var(--gray);">à définir</span>')+'</td>'+
+    '<td>'+(tuteur?tuteur.name:'<span style="color:var(--gray);">—</span>')+'</td>'+
+    '<td class="mono">'+(s.dateDebut||'—')+' → '+(s.dateFin||'—')+'</td>'+
+    '<td><span class="tag '+statutColor+'">'+STAGE_STATUTS[s.statut]+'</span></td>'+
+    '<td>'+(s.conventionFilePath ? '<button class="btn-xs" onclick="openCourseFile(\''+s.conventionFilePath+'\')">Voir</button>' : '<span style="color:var(--gray);font-size:12px;">Non déposée</span>')+'</td>'+
+    '<td style="display:flex;gap:4px;flex-wrap:wrap;"><button class="edit-btn" onclick="ui.editStageId=\''+s.id+'\';renderMain();">Modifier</button>'+
+    '<button class="del-btn" onclick="removeStage(\''+s.id+'\')">Supprimer</button></td></tr>'+
+    (ui.editStageId===s.id ? '<tr><td colspan="7"><div class="form-grid">'+
+      '<div class="f-group"><label>Entreprise</label><select id="stg-edit-entreprise-'+s.id+'"><option value="">— Aucune —</option>'+db.entreprises.map(e=>'<option value="'+e.id+'" '+(e.id===s.entrepriseId?'selected':'')+'>'+e.nom+'</option>').join('')+'</select></div>'+
+      '<div class="f-group"><label>Statut</label><select id="stg-edit-statut-'+s.id+'">'+Object.entries(STAGE_STATUTS).map(([k,v])=>'<option value="'+k+'" '+(k===s.statut?'selected':'')+'>'+v+'</option>').join('')+'</select></div>'+
+      '<div class="f-group"><label>Convention (PDF)</label><input type="file" id="stg-edit-file-'+s.id+'" accept="application/pdf"></div>'+
+      '<div class="f-group" style="grid-column:1/-1;"><label>Appréciation du tuteur pédagogique (optionnel)</label><textarea id="stg-edit-appreciation-'+s.id+'" rows="2" placeholder="L\'entreprise ne note pas le stage — cette appréciation vient du suivi de l\'établissement">'+(s.appreciation||'')+'</textarea></div>'+
+      '<button class="btn-sm" onclick="saveStage(\''+s.id+'\')">Enregistrer</button>'+
+      '<button class="btn-sm ghost" onclick="ui.editStageId=null;renderMain();">Annuler</button>'+
+    '</div></td></tr>' : '');
+  }).join('') || '<tr><td colspan="7" class="empty">Aucun stage enregistré.</td></tr>')+
+  '</tbody></table></div>';
+}
+function autoFillStageFin(){
+  const debut = document.getElementById('stg-debut').value;
+  const dureeSelect = document.getElementById('stg-duree').value;
+  if(!debut || !dureeSelect) return;
+  const d = new Date(debut);
+  d.setMonth(d.getMonth() + Number(dureeSelect));
+  document.getElementById('stg-fin').value = d.toISOString().slice(0,10);
+}
+function addStage(){
+  const studentId = document.getElementById('stg-student').value;
+  if(!studentId) return showToast('Sélectionnez un '+learnerLabel(false,false));
+  const stu = db.students.find(s=>s.id===studentId);
+  db.stages.push({
+    id: uid('stg'), studentId, classId: stu.classId,
+    entrepriseId: document.getElementById('stg-entreprise').value || null,
+    maitreEntreprise: document.getElementById('stg-maitre').value.trim(),
+    tuteurProfId: document.getElementById('stg-tuteur').value || null,
+    dateDebut: document.getElementById('stg-debut').value,
+    dateFin: document.getElementById('stg-fin').value,
+    statut: document.getElementById('stg-statut').value,
+    conventionFilePath: null, appreciation: '',
+  });
+  saveData(); renderMain(); showToast('Stage enregistré');
+}
+async function saveStage(id){
+  const s = db.stages.find(x=>x.id===id);
+  s.entrepriseId = document.getElementById('stg-edit-entreprise-'+id).value || null;
+  s.statut = document.getElementById('stg-edit-statut-'+id).value;
+  s.appreciation = document.getElementById('stg-edit-appreciation-'+id).value.trim();
+  const fileInput = document.getElementById('stg-edit-file-'+id);
+  const file = fileInput.files[0];
+  if(file){
+    if(file.type !== 'application/pdf'){ showToast('Seuls les fichiers PDF sont acceptés pour la convention'); }
+    else{
+      const path = session.schoolId+'/stages/'+id+'/'+uid('conv')+'.pdf';
+      const { error } = await sb.storage.from('course-files').upload(path, file, { contentType:'application/pdf' });
+      if(error){ showToast('Erreur de téléversement : '+error.message); }
+      else s.conventionFilePath = path;
+    }
+  }
+  ui.editStageId = null;
+  saveData(); renderMain(); showToast('Stage mis à jour');
+}
+function removeStage(id){
+  if(!confirm('Supprimer ce stage ?')) return;
+  db.stages = db.stages.filter(s=>s.id!==id);
+  saveData(); renderMain();
+}
+
+/* ---------- VUE ÉTUDIANT : MON STAGE ---------- */
+function eleveStages(stu){
+  const stages = db.stages.filter(s=>s.studentId===stu.id).sort((a,b)=>(b.dateDebut||'').localeCompare(a.dateDebut||''));
+  if(!stages.length) return '<div class="panel"><div class="empty">Aucun stage enregistré pour le moment. Ton établissement mettra cette section à jour dès qu\'un stage te sera assigné.</div></div>';
+  return stages.map(s=>{
+    const ent = db.entreprises.find(x=>x.id===s.entrepriseId);
+    const tuteur = db.profs.find(x=>x.id===s.tuteurProfId);
+    const statutColor = s.statut==='en_cours'?'green':s.statut==='termine'?'':s.statut==='recherche'?'red':'amber';
+    return '<div class="panel"><div class="panel-head"><h3>'+(ent?ent.nom:'Entreprise à définir')+'</h3><span class="tag '+statutColor+'">'+STAGE_STATUTS[s.statut]+'</span></div>'+
+    '<div class="sub" style="margin-bottom:10px;">'+(s.dateDebut||'—')+' → '+(s.dateFin||'—')+
+      (s.maitreEntreprise ? ' · Maître de stage : '+s.maitreEntreprise : '')+
+      (tuteur ? ' · Tuteur pédagogique : '+tuteur.name : '')+'</div>'+
+    (s.conventionFilePath ? '<button class="btn-xs" onclick="openCourseFile(\''+s.conventionFilePath+'\')">📄 Voir la convention de stage</button>' : '<div class="empty">Convention pas encore déposée.</div>')+
+    (s.appreciation ? '<p style="margin-top:10px;color:var(--gray);font-size:13.5px;"><b>Appréciation du tuteur pédagogique —</b> '+s.appreciation+'</p>' : '')+
+    '</div>';
+  }).join('');
+}
+
+
+
 function profProgramme(){
   const items = db.programme.filter(p=>p.classId===ui.profClass && p.subjectId===ui.profSubject);
   return '<div class="panel"><div class="panel-head"><h3>Ajouter un chapitre</h3></div>'+
@@ -3163,6 +3410,7 @@ function renderEleve(){
   if(ui.eleveTab==='bulletins') body = eleveBulletins(stu);
   if(ui.eleveTab==='cahier') body = eleveCahierBody(stu);
   if(ui.eleveTab==='manuel') body = eleveManuel(stu);
+  if(ui.eleveTab==='stages') body = eleveStages(stu);
   if(ui.eleveTab==='programme') body = eleveProgramme(stu);
   if(ui.eleveTab==='agenda') body = agendaListHTML('eleve', session.acctId);
   if(ui.eleveTab==='comportement') body = eleveComportement(stu);
@@ -3198,19 +3446,20 @@ function eleveNotes(stu){
     const sub = db.subjects.find(s=>s.id===sid);
     const list = bySubject[sid];
     let sum=0, coefSum=0;
-    list.forEach(e=>{ const g = db.grades.find(x=>x.evalId===e.id && x.studentId===stu.id); if(g && g.value!==undefined && g.value!==null){ sum+=g.value*e.coef; coefSum+=e.coef; } });
+    list.forEach(e=>{ const g = db.grades.find(x=>x.evalId===e.id && x.studentId===stu.id); const val = effectiveGradeValue(e, g); if(val!==null){ sum+=val*e.coef; coefSum+=e.coef; } });
     const moy = coefSum ? (sum/coefSum).toFixed(2) : '—';
     return '<div class="panel"><div class="panel-head"><h3>'+(sub?sub.name:'')+'</h3><span class="tag amber">Moyenne '+moy+(moy!=='—'?'/20':'')+'</span></div>'+
     '<table><thead><tr><th>Évaluation</th><th>Date</th><th>Coef.</th><th>Note</th></tr></thead><tbody>'+
     list.map(e=>{
       const g = db.grades.find(x=>x.evalId===e.id && x.studentId===stu.id);
       if(g && g.value!==undefined && g.value!==null){
-        return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td class="mono"><b>'+g.value+'</b>/20</td></tr>';
+        return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td class="mono"><b>'+g.value+'</b>/'+(e.bareme||20)+'</td></tr>';
       }
       if(g && g.justification){
         return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td><span class="tag amber">Justifié — '+g.justification+'</span></td></tr>';
       }
-      return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td><span class="tag red">Non noté — à rattraper</span>'+
+      const isPastDue = e.date && e.date<=todayISO();
+      return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td><span class="tag red">'+(isPastDue?'0 — Non noté, à rattraper':'Pas encore noté')+'</span>'+
         '<div style="margin-top:6px;display:flex;gap:6px;"><input id="just-'+e.id+'" placeholder="Motif (maladie, absence...)" style="flex:1;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;"><button class="btn-xs" onclick="submitJustification(\''+e.id+'\')">Envoyer</button></div></td></tr>';
     }).join('')+
     '</tbody></table></div>';
@@ -3336,15 +3585,16 @@ function parentNotes(child){
     const sub = db.subjects.find(s=>s.id===sid);
     const list = bySubject[sid];
     let sum=0, coefSum=0;
-    list.forEach(e=>{ const g = db.grades.find(x=>x.evalId===e.id && x.studentId===child.id); if(g && g.value!==undefined && g.value!==null){ sum+=g.value*e.coef; coefSum+=e.coef; } });
+    list.forEach(e=>{ const g = db.grades.find(x=>x.evalId===e.id && x.studentId===child.id); const val = effectiveGradeValue(e, g); if(val!==null){ sum+=val*e.coef; coefSum+=e.coef; } });
     const moy = coefSum ? (sum/coefSum).toFixed(2) : '—';
     return '<div class="panel"><div class="panel-head"><h3>'+(sub?sub.name:'')+'</h3><span class="tag amber">Moyenne '+moy+(moy!=='—'?'/20':'')+'</span></div>'+
     '<table><thead><tr><th>Évaluation</th><th>Date</th><th>Coef.</th><th>Note</th></tr></thead><tbody>'+
     list.map(e=>{
       const g = db.grades.find(x=>x.evalId===e.id && x.studentId===child.id);
-      if(g && g.value!==undefined && g.value!==null) return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td class="mono"><b>'+g.value+'</b>/20</td></tr>';
+      if(g && g.value!==undefined && g.value!==null) return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td class="mono"><b>'+g.value+'</b>/'+(e.bareme||20)+'</td></tr>';
       if(g && g.justification) return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td><span class="tag amber">Justifié</span></td></tr>';
-      return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td><span class="tag red">Non noté</span></td></tr>';
+      const isPastDue = e.date && e.date<=todayISO();
+      return '<tr><td>'+e.label+'</td><td>'+e.date+'</td><td>'+e.coef+'</td><td><span class="tag red">'+(isPastDue?'0 — Non noté':'Pas encore noté')+'</span></td></tr>';
     }).join('')+'</tbody></table></div>';
   }).join('') || '<div class="panel"><div class="empty">Aucune note enregistrée pour le moment.</div></div>';
 }
@@ -3361,8 +3611,12 @@ function parentCahierBody(child){
 function eleveCahierBody(stu){
   const subjectsWithEntries = db.subjects.filter(s=>db.journal.some(j=>j.classId===stu.classId && j.subjectId===s.id));
   if(ui.eleveCahierSubject===null && subjectsWithEntries.length) ui.eleveCahierSubject = subjectsWithEntries[0].id;
-  const entries = db.journal.filter(j=>j.classId===stu.classId && (!ui.eleveCahierSubject || j.subjectId===ui.eleveCahierSubject)).slice().reverse();
-  return '<div class="selector-row"><select onchange="ui.eleveCahierSubject=this.value; renderMain();">'+
+  if(ui.eleveCahierDate===undefined) ui.eleveCahierDate = todayISO();
+  const entries = db.journal.filter(j=>j.classId===stu.classId && (!ui.eleveCahierSubject || j.subjectId===ui.eleveCahierSubject) && (!ui.eleveCahierDate || j.date===ui.eleveCahierDate)).slice().reverse();
+  return '<div class="selector-row">'+
+    '<input type="date" value="'+ui.eleveCahierDate+'" onchange="ui.eleveCahierDate=this.value; renderMain();">'+
+    (ui.eleveCahierDate ? '<button class="btn-xs ghost" onclick="ui.eleveCahierDate=\'\'; renderMain();">Voir toutes les dates</button>' : '')+
+    '<select onchange="ui.eleveCahierSubject=this.value; renderMain();">'+
     '<option value="">Toutes les matières</option>'+
     subjectsWithEntries.map(s=>'<option value="'+s.id+'" '+(s.id===ui.eleveCahierSubject?'selected':'')+'>'+s.name+'</option>').join('')+
   '</select></div>'+
@@ -3370,7 +3624,7 @@ function eleveCahierBody(stu){
     (entries.map(j=>{
       const sub = db.subjects.find(s=>s.id===j.subjectId);
       return '<div class="entry"><div class="meta"><span>'+j.date+' · '+(sub?sub.name:'')+'</span></div><h4>'+j.contenu+'</h4>'+(j.devoirs?'<p class="devoirs"><b>Devoirs —</b> '+j.devoirs+'</p>':'')+(j.filePath?'<p style="margin-top:8px;"><button class="btn-xs" onclick="openCourseFile(\''+j.filePath+'\')">📄 Voir le cours (PDF)</button></p>':'')+'</div>';
-    }).join('') || '<div class="empty">Aucune entrée pour le moment.</div>')+
+    }).join('') || '<div class="empty">'+(ui.eleveCahierDate?'Aucune entrée pour cette date.':'Aucune entrée pour le moment.')+'</div>')+
   '</div>';
 }
 
@@ -3417,7 +3671,8 @@ function schoolsAdmin(){
   const universites = schools.filter(s=>s.type==='Université').length;
   const totalEleves = db.totalStudents || 0;
   const pendingCount = schools.reduce((n,s)=>n + s.payments.filter(p=>p.status==='en_attente').length, 0);
-  return '<div class="page-head"><div><h1>Écoles partenaires</h1><div class="sub">Gérez les accès, abonnements et contacts de chaque établissement</div></div></div>'+
+  return '<div class="page-head"><div><h1>Écoles partenaires</h1><div class="sub">Gérez les accès, abonnements et contacts de chaque établissement</div></div>'+
+  '<button class="btn-sm ghost" onclick="exportFullBackup()">Exporter une sauvegarde complète</button></div>'+
   '<div class="cards-row">'+
     '<div class="stat-card"><div class="n">'+schools.length+'</div><div class="l">Écoles</div></div>'+
     '<div class="stat-card"><div class="n" style="color:var(--green);">'+actifs+'</div><div class="l">Abonnements actifs</div></div>'+
@@ -3465,6 +3720,7 @@ function schoolsAdmin(){
         '<button class="btn-xs" onclick="ui.paySchoolId=(ui.paySchoolId===\''+s.id+'\'?null:\''+s.id+'\'); renderMain();">Paiement</button>'+
         '<button class="btn-xs" onclick="ui.adminSchoolId=(ui.adminSchoolId===\''+s.id+'\'?null:\''+s.id+'\'); renderMain();">Compte admin</button>'+
         '<button class="btn-xs" onclick="openContactPanel(\''+s.id+'\')">Contact admin</button>'+
+        '<button class="btn-xs" onclick="exportSchoolBackup(\''+s.id+'\',\''+s.name.replace(/'/g,"\\'")+'\')">Exporter (sauvegarde)</button>'+
         '<button class="btn-xs" style="color:var(--red);border-color:var(--red);" onclick="confirmDeleteSchool(\''+s.id+'\',\''+s.name.replace(/'/g,"\\'")+'\')">Supprimer</button>'+
       '</td></tr>';
     const payForm = ui.paySchoolId===s.id ? '<tr><td colspan="7"><div class="form-grid">'+
@@ -3641,6 +3897,39 @@ async function recordPayment(id){
   ui.paySchoolId = null;
   showToast('Paiement enregistré — accès actif');
   await loadData(); renderMain();
+}
+function downloadJSON(obj, filename){
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type:'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+async function exportSchoolBackup(schoolId, schoolName){
+  showToast('Préparation de la sauvegarde...');
+  const [{ data: school }, { data: schoolDataRow }, { data: profiles }, { data: payments }] = await Promise.all([
+    sb.from('schools').select('*').eq('id', schoolId).single(),
+    sb.from('school_data').select('*').eq('school_id', schoolId).maybeSingle(),
+    sb.from('profiles').select('id, school_id, role, full_name, email, created_at').eq('school_id', schoolId),
+    sb.from('payments').select('*').eq('school_id', schoolId),
+  ]);
+  const backup = { generated_at: new Date().toISOString(), school, school_data: schoolDataRow, profiles: profiles||[], payments: payments||[] };
+  const safeName = (schoolName||'ecole').replace(/[^a-zA-Z0-9]+/g,'-');
+  downloadJSON(backup, 'Sauvegarde-'+safeName+'-'+todayISO()+'.json');
+  showToast('Sauvegarde téléchargée');
+}
+async function exportFullBackup(){
+  showToast('Préparation de la sauvegarde complète — ça peut prendre un moment...');
+  const [{ data: schools }, { data: schoolData }, { data: profiles }, { data: payments }] = await Promise.all([
+    sb.from('schools').select('*'),
+    sb.from('school_data').select('*'),
+    sb.from('profiles').select('id, school_id, role, full_name, email, created_at'),
+    sb.from('payments').select('*'),
+  ]);
+  const backup = { generated_at: new Date().toISOString(), schools: schools||[], school_data: schoolData||[], profiles: profiles||[], payments: payments||[] };
+  downloadJSON(backup, 'Sauvegarde-complete-Kampusya-'+todayISO()+'.json');
+  showToast('Sauvegarde complète téléchargée — '+(schools||[]).length+' école(s)');
 }
 async function confirmDeclaredPayment(paymentId, schoolId){
   const defaultDue = new Date();
