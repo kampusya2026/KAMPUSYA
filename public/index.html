@@ -263,6 +263,7 @@ tr:last-child td{border-bottom:none;}
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
 <script>
 /* ============================================================
    CONFIGURATION SUPABASE — à renseigner après création du projet
@@ -339,6 +340,7 @@ async function loadData(){
   if(!db.evals) db.evals=[]; if(!db.schedule) db.schedule=[]; if(!db.events) db.events=[];
   if(!db.messages) db.messages=[]; if(!db.behavior) db.behavior=[]; if(!db.programme) db.programme=[];
   if(!db.bulletins) db.bulletins=[];
+  if(!db.subjectAppreciations) db.subjectAppreciations=[];
   if(!db.manuels) db.manuels=[];
   if(!db.adminAccess) db.adminAccess = { founderId: null, principals: [] };
   if(!db.entreprises) db.entreprises=[]; if(!db.stages) db.stages=[];
@@ -492,13 +494,13 @@ const TABS = {
           ['schedule',"Emplois du temps",'#2F6B4F'], ['comptes','Comptes','#B23A33'], ['presences','Présences','#B23A33'],
           ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['finances','Finances','#2F6B4F'], ['stages','Stages','#6D5AA6'], ['programme','Programme','#A87820'], ['manuel','Manuel','#1B2A4A'], ['agenda','Agenda','#1B2A4A'],
           ['comportement','Comportement','#A87820'], ['messagerie','Messagerie','#2E4271'], ['archives','Archives','#6B6B63'] ],
-  prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
+  prof:[ ['appel','Appel','#2F6B4F'], ['notes','Notes','#C9952C'], ['appreciations','Appréciations','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
          ['programme','Programme annuel','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
          ['messagerie','Messages','#2E4271'] ],
   eleve:[ ['emploi','Emploi du temps','#2F6B4F'], ['absences','Absences','#B23A33'], ['notes','Mes notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'], ['stages','Mon stage','#6D5AA6'],
           ['programme','Programme','#A87820'], ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#B23A33'],
           ['messagerie','Messages','#2E4271'] ],
-  parent:[ ['absences','Absences','#B23A33'], ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
+  parent:[ ['absences','Absences','#B23A33'], ['notes','Notes','#C9952C'], ['bulletins','Bulletins','#C9952C'], ['paiements','Paiements','#2F6B4F'], ['cahier','Cahier de texte','#1B2A4A'], ['manuel','Manuel','#1B2A4A'],
            ['agenda','Agenda','#1B2A4A'], ['comportement','Comportement','#A87820'], ['messagerie','Messages','#2E4271'] ],
   super:[ ['schools','Écoles partenaires','#C9952C'] ]
 };
@@ -1653,6 +1655,7 @@ function renderImportPreview(kind){
       '<button class="btn-xs" onclick="applyCommonPassword(\''+kind+'\')">Appliquer à tous</button>'+
       '<button class="btn-xs ghost" onclick="applyCommonPassword(\''+kind+'\', true)">Générer un code aléatoire par personne</button>'+
     '</div>'+
+    '<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:12px;"><input type="checkbox" id="send-email-'+kind+'" checked> Envoyer automatiquement les identifiants par e-mail (uniquement pour les lignes avec un vrai e-mail)</label>'+
     '<table><thead><tr><th>Nom</th><th>Email</th><th>'+(kind==='eleves'?'Classe':kind==='profs'?'Matières / Classes':'Enfant(s) lié(s)')+'</th><th>Mot de passe</th><th>Statut</th></tr></thead><tbody>'+
     parsed.map((r,i)=>'<tr'+(r.errors.length?' style="background:var(--red-bg);"':'')+'><td>'+r.name+'</td><td>'+(r.email||'<span style="color:var(--gray);">—</span>')+'</td>'+
       '<td>'+(kind==='eleves' ? (r.className||'<span style="color:var(--gray);">—</span>') : kind==='profs' ? (r.subjectIds.length+' matière(s), '+r.classIds.length+' classe(s)') : (r.studentIds.length+' enfant(s) reconnu(s)'))+'</td>'+
@@ -1692,9 +1695,11 @@ async function confirmImport(kind){
     missingPw.forEach(r=>r.password = generateRandomPassword());
   }
   if(!confirm('Créer '+rows.length+' compte(s) maintenant ? Cette opération peut prendre quelques minutes selon le nombre.')) return;
+  const sendEmails = document.getElementById('send-email-'+kind) ? document.getElementById('send-email-'+kind).checked : false;
   const el = document.getElementById('import-'+kind+'-preview');
   const results = [];
   const takenUsernames = new Set([...db.students, ...db.profs, ...db.parents].map(p=>(p.email||'').toLowerCase().split('@')[0]));
+  let emailsSent = 0;
   for(let i=0;i<rows.length;i++){
     const r = rows[i];
     el.innerHTML = '<div class="sub">Import en cours... '+(i+1)+' / '+rows.length+' ('+r.name+')</div>';
@@ -1710,9 +1715,20 @@ async function confirmImport(kind){
       }else{
         db.parents.push({id, name:r.name, email:identifiant, studentIds:r.studentIds});
       }
-      results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:r.password, statut:'Créé' });
+      let emailStatut = '—';
+      if(sendEmails && r.email){
+        try{
+          const res = await fetch('/.netlify/functions/send-credentials-email', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ to:r.email, fullName:r.name, password:r.password, schoolName:db.school.name, role })
+          });
+          emailStatut = res.ok ? 'Envoyé' : 'Échec';
+          if(res.ok) emailsSent++;
+        }catch(e){ emailStatut = 'Échec'; }
+      }
+      results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:r.password, statut:'Créé', 'e-mail envoyé':emailStatut });
     }else{
-      results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:'—', statut:'Échec (voir message d\'erreur précédent)' });
+      results.push({ nom:r.name, 'identifiant (email ou nom d\'utilisateur)':identifiant, motDePasse:'—', statut:'Échec (voir message d\'erreur précédent)', 'e-mail envoyé':'—' });
     }
   }
   await saveData();
@@ -1720,7 +1736,7 @@ async function confirmImport(kind){
   document.getElementById('import-'+kind+'-file').value = '';
   renderMain();
   downloadImportResults(results, kind);
-  showToast(results.filter(r=>r.statut==='Créé').length+' compte(s) créé(s) sur '+rows.length);
+  showToast(results.filter(r=>r.statut==='Créé').length+' compte(s) créé(s) sur '+rows.length+(sendEmails?' — '+emailsSent+' e-mail(s) envoyé(s)':''));
 }
 function downloadImportResults(results, kind){
   if(typeof XLSX === 'undefined') return;
@@ -1942,6 +1958,58 @@ function studentSubjectAverageForPeriod(studentId, classId, subjectId, periode){
   });
   return coefSum ? sum/coefSum : null;
 }
+const BULLETIN_MENTIONS = ['', 'Félicitations', "Tableau d'honneur", 'Encouragements', 'Avertissement travail', 'Blâme travail'];
+function autoMention(moy){
+  if(moy===null || moy===undefined || isNaN(moy)) return '';
+  if(moy>=16) return 'Félicitations';
+  if(moy>=14) return "Tableau d'honneur";
+  if(moy>=12) return 'Encouragements';
+  if(moy<8.5) return 'Blâme travail';
+  if(moy<10) return 'Avertissement travail';
+  return '';
+}
+function fmtMoy(v){ return (v===null||v===undefined||isNaN(v)) ? '—' : Number(v).toFixed(2); }
+function rankLabel(r, exaequo){ return r ? (r===1?'1er':r+'e')+(exaequo?' ex æquo':'') : '—'; }
+function rankList(values){
+  // values: [{id, v}] -> map id -> {rang, exaequo}
+  const sorted = values.filter(x=>x.v!==null).sort((a,b)=>b.v-a.v);
+  const out = {};
+  sorted.forEach((x,i)=>{
+    const key = x.v.toFixed(2);
+    const first = sorted.findIndex(y=>y.v.toFixed(2)===key);
+    const count = sorted.filter(y=>y.v.toFixed(2)===key).length;
+    out[x.id] = { rang: first+1, exaequo: count>1 };
+  });
+  return out;
+}
+function computeClassBulletinStats(classId, periode){
+  const students = db.students.filter(s=>s.classId===classId);
+  const perStudent = {};
+  students.forEach(stu=>{
+    const subj = {}; const avgs = [];
+    db.subjects.forEach(sub=>{
+      const a = studentSubjectAverageForPeriod(stu.id, classId, sub.id, periode);
+      subj[sub.id] = a; if(a!==null) avgs.push(a);
+    });
+    perStudent[stu.id] = { subj, moy: avgs.length ? avgs.reduce((a,b)=>a+b,0)/avgs.length : null };
+  });
+  const subjectStats = {};
+  db.subjects.forEach(sub=>{
+    const vals = students.map(s=>({id:s.id, v:perStudent[s.id].subj[sub.id]}));
+    const nums = vals.filter(x=>x.v!==null).map(x=>x.v);
+    subjectStats[sub.id] = { moyClasse: nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : null, ranks: rankList(vals) };
+  });
+  const genVals = students.map(s=>({id:s.id, v:perStudent[s.id].moy}));
+  const ranks = rankList(genVals);
+  const nums = genVals.filter(x=>x.v!==null).map(x=>x.v);
+  return {
+    perStudent, subjectStats, ranks,
+    effectif: students.length,
+    moyClasse: nums.length ? nums.reduce((a,b)=>a+b,0)/nums.length : null,
+    maxMoy: nums.length ? Math.max(...nums) : null,
+    minMoy: nums.length ? Math.min(...nums) : null
+  };
+}
 function adminBulletins(){
   if(!ui.bulletinClass && db.classes.length) ui.bulletinClass = db.classes[0].id;
   if(!ui.bulletinPeriode) ui.bulletinPeriode = getPeriodes()[0];
@@ -1951,6 +2019,7 @@ function adminBulletins(){
   const students = allStudents.filter(s=>!search || s.name.toLowerCase().includes(search));
   const alreadyPublished = (db.bulletins||[]).filter(b=>b.classId===ui.bulletinClass && b.periode===ui.bulletinPeriode && b.year===db.school.year);
   const publishedVisible = search ? alreadyPublished.filter(b=>b.studentName.toLowerCase().includes(search)) : alreadyPublished;
+  const st = computeClassBulletinStats(ui.bulletinClass, ui.bulletinPeriode);
   return '<div class="page-head"><div><h1>Bulletins</h1><div class="sub">Publiez les bulletins de fin de période — '+learnerLabel(false,true)+' et parents pourront les consulter et les télécharger en PDF</div></div></div>'+
   '<div class="selector-row">'+
     '<select onchange="ui.bulletinClass=this.value; renderMain();">'+db.classes.map(c=>'<option value="'+c.id+'" '+(c.id===ui.bulletinClass?'selected':'')+'>'+c.name+'</option>').join('')+'</select>'+
@@ -1958,25 +2027,31 @@ function adminBulletins(){
     '<input value="'+ui.bulletinSearch+'" oninput="ui.bulletinSearch=this.value; renderMain();" placeholder="Rechercher un nom..." style="flex:1;min-width:180px;padding:8px 10px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;">'+
   '</div>'+
   '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Aperçu avant publication</h3></div>'+
-  '<table><thead><tr><th>'+learnerLabel(true,false)+'</th>'+db.subjects.map(s=>'<th>'+s.name+'</th>').join('')+'<th>Moyenne</th><th>Appréciation</th></tr></thead><tbody>'+
-  (students.map(stu=>{
-    let subjAvgs = [];
-    const cells = db.subjects.map(sub=>{
-      const avg = studentSubjectAverageForPeriod(stu.id, ui.bulletinClass, sub.id, ui.bulletinPeriode);
-      if(avg!==null) subjAvgs.push(avg);
-      return '<td class="mono">'+(avg!==null?avg.toFixed(2):'—')+'</td>';
-    }).join('');
-    const moyGen = subjAvgs.length ? (subjAvgs.reduce((a,b)=>a+b,0)/subjAvgs.length).toFixed(2) : '—';
+  '<div class="sub" style="margin:0 0 12px;">Effectif : <b>'+st.effectif+'</b> · Moyenne de la classe : <b>'+fmtMoy(st.moyClasse)+'</b> · Plus forte : <b>'+fmtMoy(st.maxMoy)+'</b> · Plus faible : <b>'+fmtMoy(st.minMoy)+'</b></div>'+
+  '<div class="sub" style="margin:0 0 12px;">Appréciations des enseignants : '+db.subjects.map(sub=>{
+      const n = allStudents.filter(stu=>{ const a=getSubjectAppreciation(stu.id, ui.bulletinClass, sub.id, ui.bulletinPeriode); return a && a.text; }).length;
+      const col = n===allStudents.length && n>0 ? 'var(--green, #2F6B4F)' : (n===0 ? '#B23A33' : 'var(--gold-dark, #A87820)');
+      return '<span style="display:inline-block;margin:3px 6px 3px 0;padding:2px 8px;border-radius:10px;border:1px solid '+col+';color:'+col+';font-size:12px;">'+sub.name+' '+n+'/'+allStudents.length+'</span>';
+    }).join('')+'</div>'+
+  '<table><thead><tr><th>'+learnerLabel(true,false)+'</th>'+db.subjects.map(s=>'<th>'+s.name+'</th>').join('')+'<th>Moyenne</th><th>Rang</th><th>Mention</th><th>Appréciation</th></tr></thead><tbody>'+
+  (students.slice().sort((a,b)=>((st.ranks[a.id]||{}).rang||9999)-((st.ranks[b.id]||{}).rang||9999)).map(stu=>{
+    const ps = st.perStudent[stu.id];
+    const cells = db.subjects.map(sub=>'<td class="mono">'+fmtMoy(ps.subj[sub.id])+'</td>').join('');
+    const rk = st.ranks[stu.id];
     const existing = alreadyPublished.find(b=>b.studentId===stu.id);
-    return '<tr><td><b>'+stu.name+'</b></td>'+cells+'<td class="mono"><b>'+moyGen+'</b></td>'+
-      '<td><input id="appr-'+stu.id+'" placeholder="Optionnel" value="'+(existing?(existing.appreciation||''):'')+'" style="width:170px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;"></td></tr>';
-  }).join('') || '<tr><td colspan="'+(db.subjects.length+3)+'" class="empty">Aucun '+learnerLabel(false,false)+' ne correspond.</td></tr>')+
+    const mention = existing && existing.mention!==undefined ? existing.mention : autoMention(ps.moy);
+    return '<tr><td><b>'+stu.name+'</b></td>'+cells+'<td class="mono"><b>'+fmtMoy(ps.moy)+'</b></td>'+
+      '<td class="mono">'+(rk?rankLabel(rk.rang,rk.exaequo):'—')+'</td>'+
+      '<td><select id="mention-'+stu.id+'" style="padding:6px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;">'+BULLETIN_MENTIONS.map(m=>'<option value="'+m.replace(/"/g,'&quot;')+'" '+(m===mention?'selected':'')+'>'+(m||'Aucune')+'</option>').join('')+'</select></td>'+
+      '<td><input id="appr-'+stu.id+'" placeholder="Optionnel" value="'+(existing?(existing.appreciation||'').replace(/"/g,'&quot;'):'')+'" style="width:170px;padding:6px 8px;border:1.5px solid var(--line);border-radius:6px;font-size:12.5px;"></td></tr>';
+  }).join('') || '<tr><td colspan="'+(db.subjects.length+5)+'" class="empty">Aucun '+learnerLabel(false,false)+' ne correspond.</td></tr>')+
   '</tbody></table>'+
-  '<button class="btn-sm" style="margin-top:14px;" onclick="publishBulletins()">Publier les bulletins de cette classe</button>'+
+  '<div class="sub" style="margin-top:12px;">Si un enseignant modifie son appréciation après publication, republiez pour mettre le bulletin à jour.</div>'+
+  '<button class="btn-sm" style="margin-top:10px;" onclick="publishBulletins()">Publier les bulletins de cette classe</button>'+
   '</div>'+
   (publishedVisible.length ? '<div class="panel"><div class="panel-head"><h3>Déjà publiés — '+ui.bulletinPeriode+'</h3></div>'+
-    '<table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Moyenne générale</th><th>Publié le</th><th></th></tr></thead><tbody>'+
-    publishedVisible.map(b=>'<tr><td>'+b.studentName+'</td><td class="mono">'+b.moyenneGenerale+'</td><td>'+b.publishedAt+'</td>'+
+    '<table><thead><tr><th>'+learnerLabel(true,false)+'</th><th>Moyenne générale</th><th>Rang</th><th>Mention</th><th>Publié le</th><th></th></tr></thead><tbody>'+
+    publishedVisible.map(b=>'<tr><td>'+b.studentName+'</td><td class="mono">'+b.moyenneGenerale+'</td><td class="mono">'+(b.rang||'—')+(b.effectif?' / '+b.effectif:'')+'</td><td>'+(b.mention||'—')+'</td><td>'+b.publishedAt+'</td>'+
       '<td><button class="btn-xs" onclick="downloadBulletinPDF(\''+b.id+'\')">Télécharger</button> <button class="del-btn" onclick="deleteBulletin(\''+b.id+'\')">Supprimer</button></td></tr>').join('')+
     '</tbody></table></div>' : '');
 }
@@ -1985,23 +2060,33 @@ async function publishBulletins(){
   if(!students.length) return showToast('Aucun '+learnerLabel(false,false)+' dans cette classe');
   if(!confirm('Publier les bulletins de '+nameOf(db.classes,ui.bulletinClass)+' pour '+ui.bulletinPeriode+' ? Les '+learnerLabel(false,true)+' et leurs parents pourront les consulter immédiatement.')) return;
   if(!db.bulletins) db.bulletins=[];
+  const st = computeClassBulletinStats(ui.bulletinClass, ui.bulletinPeriode);
   students.forEach(stu=>{
-    let subjAvgs = [];
+    const ps = st.perStudent[stu.id];
     const subjects = db.subjects.map(sub=>{
-      const avg = studentSubjectAverageForPeriod(stu.id, ui.bulletinClass, sub.id, ui.bulletinPeriode);
-      if(avg!==null) subjAvgs.push(avg);
-      return { name: sub.name, moyenne: avg!==null ? avg.toFixed(2) : null };
+      const avg = ps.subj[sub.id]; const ss = st.subjectStats[sub.id]; const rk = ss.ranks[stu.id];
+      const sa = getSubjectAppreciation(stu.id, ui.bulletinClass, sub.id, ui.bulletinPeriode);
+      return { name: sub.name, moyenne: avg!==null ? avg.toFixed(2) : null,
+        moyClasse: ss.moyClasse!==null ? ss.moyClasse.toFixed(2) : null,
+        rang: rk ? rankLabel(rk.rang, rk.exaequo) : null,
+        appreciation: sa ? sa.text : '', prof: sa ? sa.profName : '' };
     });
-    const moyGen = subjAvgs.length ? (subjAvgs.reduce((a,b)=>a+b,0)/subjAvgs.length).toFixed(2) : '—';
+    const moyGen = ps.moy!==null ? ps.moy.toFixed(2) : '—';
+    const rk = st.ranks[stu.id];
     const existingBulletin = db.bulletins.find(b=>b.studentId===stu.id && b.classId===ui.bulletinClass && b.periode===ui.bulletinPeriode && b.year===db.school.year);
     const apprEl = document.getElementById('appr-'+stu.id);
-    // Si la ligne n'est plus affichée (filtrée par la recherche), on garde l'appréciation déjà enregistrée plutôt que de l'effacer.
+    const mentionEl = document.getElementById('mention-'+stu.id);
+    // Si la ligne n'est plus affichée (filtrée par la recherche), on garde ce qui était déjà enregistré.
     const appreciation = apprEl ? apprEl.value.trim() : (existingBulletin ? existingBulletin.appreciation : '');
+    const mention = mentionEl ? mentionEl.value : (existingBulletin && existingBulletin.mention!==undefined ? existingBulletin.mention : autoMention(ps.moy));
     db.bulletins = db.bulletins.filter(b=>!(b.studentId===stu.id && b.classId===ui.bulletinClass && b.periode===ui.bulletinPeriode && b.year===db.school.year));
     db.bulletins.push({
       id: uid('bul'), studentId: stu.id, classId: ui.bulletinClass, periode: ui.bulletinPeriode, year: db.school.year,
       className: nameOf(db.classes, ui.bulletinClass), studentName: stu.name,
-      subjects, moyenneGenerale: moyGen, appreciation, publishedAt: todayISO()
+      subjects, moyenneGenerale: moyGen, appreciation, mention,
+      rang: rk ? rankLabel(rk.rang, rk.exaequo) : null, effectif: st.effectif,
+      moyClasse: fmtMoy(st.moyClasse), maxMoy: fmtMoy(st.maxMoy), minMoy: fmtMoy(st.minMoy),
+      publishedAt: todayISO()
     });
   });
   saveData(); renderMain();
@@ -2041,8 +2126,13 @@ function generateBulletinPDF(b){
 
   doc.autoTable({
     startY: y,
-    head: [['Matière','Moyenne / 20']],
-    body: b.subjects.map(s=>[s.name, s.moyenne!==null ? s.moyenne : '—']),
+    head: b.rang ? [['Matière','Moy. / 20','Moy. classe','Rang','Appréciation du professeur']] : [['Matière','Moyenne / 20','Appréciation du professeur']],
+    body: b.subjects.map(s=>{
+      const appr = s.appreciation ? s.appreciation + (s.prof ? '\n' + s.prof : '') : '';
+      return b.rang ? [s.name, s.moyenne!==null ? s.moyenne : '—', s.moyClasse||'—', s.rang||'—', appr] : [s.name, s.moyenne!==null ? s.moyenne : '—', appr];
+    }),
+    columnStyles: b.rang ? {0:{cellWidth:95},1:{cellWidth:55,halign:'center'},2:{cellWidth:60,halign:'center'},3:{cellWidth:55,halign:'center'},4:{fontSize:9}} : {2:{fontSize:9}},
+    didParseCell: function(data){ if(data.section==='body' && data.column.index===(b.rang?4:2)){ data.cell.styles.textColor=[60,60,60]; } if(data.section==='head' && b.rang && data.column.index>=1 && data.column.index<=3){ data.cell.styles.halign='center'; } },
     styles:{fontSize:10.5}, headStyles:{fillColor:[27,42,74]}, margin:{left:40,right:40}
   });
   y = doc.lastAutoTable.finalY + 26;
@@ -2051,7 +2141,33 @@ function generateBulletinPDF(b){
   doc.roundedRect(40, y-20, pageWidth-80, 34, 6, 6, 'F');
   doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(168,120,32);
   doc.text('Moyenne générale : '+b.moyenneGenerale+' / 20', 54, y+2);
-  y += 42;
+  if(b.rang){ doc.text('Rang : '+b.rang+' sur '+b.effectif, pageWidth-54, y+2, {align:'right'}); }
+  y += 34;
+  if(b.rang){
+    doc.autoTable({
+      startY: y,
+      head: [['Effectif','Moyenne de la classe','Plus forte moyenne','Plus faible moyenne']],
+      body: [[String(b.effectif), b.moyClasse, b.maxMoy, b.minMoy]],
+      styles:{fontSize:10, halign:'center'}, headStyles:{fillColor:[47,107,79]}, margin:{left:40,right:40}
+    });
+    y = doc.lastAutoTable.finalY + 20;
+  }
+  if(b.mention){
+    doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(27,42,74);
+    doc.text('Décision du conseil de classe', 40, y); y += 18;
+    const all = ['Félicitations',"Tableau d'honneur",'Encouragements','Avertissement travail','Blâme travail'];
+    let x = 40;
+    doc.setFontSize(9.5);
+    all.forEach(m=>{
+      const on = m===b.mention;
+      doc.setDrawColor(27,42,74); doc.setFillColor(27,42,74);
+      doc.rect(x, y-8, 9, 9, on?'FD':'S');
+      doc.setFont('helvetica', on?'bold':'normal'); doc.setTextColor(on?27:90, on?42:90, on?74:90);
+      doc.text(m, x+13, y);
+      x += doc.getTextWidth(m) + 30;
+    });
+    y += 24;
+  }
 
   if(b.appreciation){
     doc.setFont('helvetica','bold'); doc.setFontSize(11); doc.setTextColor(27,42,74);
@@ -2077,9 +2193,9 @@ function generateBulletinPDF(b){
 }
 function eleveBulletins(stu){
   const list = (db.bulletins||[]).filter(b=>b.studentId===stu.id).slice().sort((a,b2)=>b2.publishedAt.localeCompare(a.publishedAt));
-  return '<div class="panel"><table><thead><tr><th>Période</th><th>Année</th><th>Moyenne générale</th><th>Publié le</th><th></th></tr></thead><tbody>'+
-  (list.map(b=>'<tr><td>'+b.periode+'</td><td>'+b.year+'</td><td class="mono"><b>'+b.moyenneGenerale+'</b>/20</td><td>'+b.publishedAt+'</td>'+
-    '<td><button class="btn-xs" onclick="downloadBulletinPDF(\''+b.id+'\')">Télécharger le PDF</button></td></tr>').join('') || '<tr><td colspan="5" class="empty">Aucun bulletin publié pour le moment.</td></tr>')+
+  return '<div class="panel"><table><thead><tr><th>Période</th><th>Année</th><th>Moyenne générale</th><th>Rang</th><th>Mention</th><th>Publié le</th><th></th></tr></thead><tbody>'+
+  (list.map(b=>'<tr><td>'+b.periode+'</td><td>'+b.year+'</td><td class="mono"><b>'+b.moyenneGenerale+'</b>/20</td><td class="mono">'+(b.rang?b.rang+' / '+b.effectif:'—')+'</td><td>'+(b.mention||'—')+'</td><td>'+b.publishedAt+'</td>'+
+    '<td><button class="btn-xs" onclick="downloadBulletinPDF(\''+b.id+'\')">Télécharger le PDF</button></td></tr>').join('') || '<tr><td colspan="7" class="empty">Aucun bulletin publié pour le moment.</td></tr>')+
   '</tbody></table></div>';
 }
 
@@ -2090,7 +2206,7 @@ function scolariteFor(studentId){
   return db.finance.scolarite.find(s=>s.studentId===studentId && s.year===db.school.year);
 }
 function paidFor(studentId){
-  return db.finance.paiementsScolarite.filter(p=>p.studentId===studentId && p.year===db.school.year)
+  return db.finance.paiementsScolarite.filter(p=>p.studentId===studentId && p.year===db.school.year && !p.annule)
     .reduce((sum,p)=>sum+p.montant, 0);
 }
 function classTranches(classId){
@@ -2198,7 +2314,8 @@ function adminFinanceScolarite(){
         '<td style="display:flex;gap:4px;flex-wrap:wrap;">'+
           (hasTranches ? '<button class="btn-xs" onclick="ui.detailScolariteId=(ui.detailScolariteId===\''+stu.id+'\'?null:\''+stu.id+'\');renderMain();">Détail</button>' : '<button class="edit-btn" onclick="ui.editScolariteId=\''+stu.id+'\';renderMain();">Frais</button>')+
           '<button class="btn-xs" onclick="ui.payScolariteId=(ui.payScolariteId===\''+stu.id+'\'?null:\''+stu.id+'\');renderMain();">Paiement</button>'+
-        '</td></tr>'+detailRow+payForm;
+          '<button class="btn-xs" onclick="ui.recusScolariteId=(ui.recusScolariteId===\''+stu.id+'\'?null:\''+stu.id+'\');renderMain();">Reçus</button>'+
+        '</td></tr>'+detailRow+payForm+(ui.recusScolariteId===stu.id ? '<tr><td colspan="7">'+recusTableHTML(stu.id, true)+'</td></tr>' : '');
     }).join('');
   }).join('') || '<tr><td colspan="7" class="empty">Aucun '+learnerLabel(false,false)+'.</td></tr>')+
   '</tbody></table></div>';
@@ -2222,12 +2339,231 @@ function addPaiementScolarite(studentId){
   const date = document.getElementById('pay-sc-date').value || todayISO();
   const mode = document.getElementById('pay-sc-mode').value;
   if(!montant) return showToast('Indiquez un montant');
-  db.finance.paiementsScolarite.push({ id: uid('psc'), studentId, year: db.school.year, montant, date, mode });
-  // Reflète aussi ce paiement dans la trésorerie générale de l'établissement
   const stu = db.students.find(s=>s.id===studentId);
-  db.finance.tresorerie.push({ id: uid('tr'), date, sens:'entree', categorie:'scolarite', tiers: stu?stu.name:'', montant, description: 'Paiement scolarité — '+mode });
+  const trId = uid('tr');
+  const pay = { id: uid('psc'), studentId, year: db.school.year, montant, date, mode, tresorerieId: trId,
+    numero: nextReceiptNumber(), verifCode: randomVerifCode(), encaissePar: session.fullName || 'Administration', createdAt: new Date().toISOString() };
+  db.finance.paiementsScolarite.push(pay);
+  // Reflète aussi ce paiement dans la trésorerie générale de l'établissement
+  db.finance.tresorerie.push({ id: trId, date, sens:'entree', categorie:'scolarite', tiers: stu?stu.name:'', montant, description: 'Paiement scolarité — '+mode+' — reçu '+pay.numero });
   ui.payScolariteId = null;
-  saveData(); renderMain(); showToast('Paiement enregistré');
+  saveData(); renderMain(); showToast('Paiement enregistré — reçu '+pay.numero);
+  if(confirm('Paiement enregistré. Télécharger le reçu '+pay.numero+' maintenant ?')) downloadRecuPDF(pay.id);
+}
+
+
+/* ---------- REÇUS DE SCOLARITÉ (numérotés + QR de vérification) ---------- */
+function randomVerifCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const arr = new Uint32Array(12); (window.crypto||window.msCrypto).getRandomValues(arr);
+  return Array.from(arr).map(n=>chars[n%chars.length]).join('');
+}
+function nextReceiptNumber(){
+  if(!db.finance.receiptCounter) db.finance.receiptCounter = 0;
+  const year = new Date().getFullYear();
+  // On part toujours du plus grand numéro existant pour ne jamais créer de doublon
+  const maxExisting = db.finance.paiementsScolarite.reduce((m,p)=>{
+    const n = p.numero ? parseInt(String(p.numero).split('-').pop(),10) : 0; return isNaN(n)?m:Math.max(m,n);
+  }, 0);
+  db.finance.receiptCounter = Math.max(db.finance.receiptCounter, maxExisting) + 1;
+  return 'REC-'+year+'-'+String(db.finance.receiptCounter).padStart(5,'0');
+}
+function ensureReceiptIdentity(p){
+  // Paiements enregistrés avant l'arrivée des reçus : on leur attribue un numéro et un code une seule fois
+  let changed = false;
+  if(!p.numero){ p.numero = nextReceiptNumber(); changed = true; }
+  if(!p.verifCode){ p.verifCode = randomVerifCode(); changed = true; }
+  return changed;
+}
+function receiptVerifyURL(p){
+  return location.origin + '/?verif=' + encodeURIComponent(db.school.id + '~' + p.verifCode);
+}
+function recusTableHTML(studentId, isAdmin){
+  const list = db.finance.paiementsScolarite.filter(p=>p.studentId===studentId).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  if(!list.length) return '<div class="empty">Aucun paiement enregistré.</div>';
+  return '<table style="margin-top:6px;"><thead><tr><th>N° reçu</th><th>Date</th><th>Montant</th><th>Mode</th><th>Statut</th><th></th></tr></thead><tbody>'+
+    list.map(p=>'<tr><td class="mono">'+(p.numero||'—')+'</td><td class="mono">'+p.date+'</td><td class="mono">'+p.montant.toLocaleString('fr-FR')+' F</td><td>'+(p.mode||'—')+'</td>'+
+      '<td>'+(p.annule ? '<span class="tag red">Annulé</span>' : '<span class="tag green">Valide</span>')+'</td>'+
+      '<td style="display:flex;gap:4px;flex-wrap:wrap;">'+(p.annule ? '' : '<button class="btn-xs" onclick="downloadRecuPDF(\''+p.id+'\')">Reçu PDF</button>')+
+      (isAdmin && !p.annule ? '<button class="del-btn" onclick="annulerPaiementScolarite(\''+p.id+'\')">Annuler</button>' : '')+'</td></tr>').join('')+
+  '</tbody></table>';
+}
+function annulerPaiementScolarite(id){
+  const p = db.finance.paiementsScolarite.find(x=>x.id===id);
+  if(!p) return;
+  const motif = prompt('Motif de l\'annulation (ex. erreur de saisie, chèque rejeté) :');
+  if(motif===null) return;
+  p.annule = true; p.annuleLe = todayISO(); p.annuleMotif = motif.trim(); p.annulePar = session.fullName || 'Administration';
+  if(p.tresorerieId) db.finance.tresorerie = db.finance.tresorerie.filter(e=>e.id!==p.tresorerieId);
+  saveData(); renderMain();
+  showToast('Paiement annulé. Le QR du reçu affichera désormais « Reçu annulé ».');
+}
+function montantEnLettres(n){
+  n = Math.round(n);
+  if(n===0) return 'zéro';
+  const u = ['','un','deux','trois','quatre','cinq','six','sept','huit','neuf','dix','onze','douze','treize','quatorze','quinze','seize','dix-sept','dix-huit','dix-neuf'];
+  const d = ['','dix','vingt','trente','quarante','cinquante','soixante','soixante','quatre-vingt','quatre-vingt'];
+  function cent(x){ // 0..999
+    let out = '';
+    const c = Math.floor(x/100), r = x%100;
+    if(c){ out = (c>1 ? u[c]+' cent' : 'cent') + (c>1 && r===0 ? 's' : ''); }
+    if(r){
+      let t;
+      if(r<20) t = u[r];
+      else{
+        const di = Math.floor(r/10), un = r%10;
+        if(di===7 || di===9){ t = d[di] + (di===7 && un===1 ? ' et ' : '-') + u[10+un]; }
+        else { t = d[di] + (un===1 && di!==8 ? ' et un' : (un ? '-'+u[un] : (di===8 ? 's' : ''))); }
+      }
+      out += (out?' ':'') + t;
+    }
+    return out;
+  }
+  const parts = [];
+  const mds = Math.floor(n/1e9), mns = Math.floor((n%1e9)/1e6), mls = Math.floor((n%1e6)/1000), rest = n%1000;
+  if(mds) parts.push(cent(mds)+' milliard'+(mds>1?'s':''));
+  if(mns) parts.push(cent(mns)+' million'+(mns>1?'s':''));
+  if(mls) parts.push(mls===1 ? 'mille' : cent(mls).replace(/(cent|vingt)s$/,'$1')+' mille');
+  if(rest) parts.push(cent(rest));
+  return parts.join(' ');
+}
+function drawQR(doc, text, x, y, size){
+  if(typeof qrcode === 'undefined') return false;
+  const qr = qrcode(0, 'M'); qr.addData(text); qr.make();
+  const n = qr.getModuleCount(); const cell = size/n;
+  doc.setFillColor(255,255,255); doc.rect(x-4, y-4, size+8, size+8, 'F');
+  doc.setFillColor(0,0,0);
+  for(let r=0;r<n;r++) for(let c=0;c<n;c++) if(qr.isDark(r,c)) doc.rect(x+c*cell, y+r*cell, cell+0.15, cell+0.15, 'F');
+  return true;
+}
+function downloadRecuPDF(id){
+  const p = db.finance.paiementsScolarite.find(x=>x.id===id);
+  if(!p) return;
+  if(p.annule) return showToast('Ce paiement a été annulé : aucun reçu ne peut être émis.');
+  if(typeof window.jspdf === 'undefined'){ showToast('La bibliothèque PDF n\'a pas pu se charger — vérifiez la connexion internet'); return; }
+  // Numérote d'un coup, dans l'ordre chronologique, tous les anciens paiements encore sans numéro
+  let changed = false;
+  db.finance.paiementsScolarite.slice().sort((a,b)=>(a.date+(a.createdAt||'')).localeCompare(b.date+(b.createdAt||'')))
+    .forEach(x=>{ if(ensureReceiptIdentity(x)) changed = true; });
+  if(changed) saveData();
+  const stu = db.students.find(s=>s.id===p.studentId) || { name: '—', classId: null };
+  const cls = db.classes.find(c=>c.id===stu.classId);
+  // Situation au moment de ce paiement (paiements valides jusqu'à celui-ci inclus)
+  const valides = db.finance.paiementsScolarite.filter(x=>x.studentId===p.studentId && x.year===p.year && !x.annule)
+    .sort((a,b)=>(a.date+(a.createdAt||'')).localeCompare(b.date+(b.createdAt||'')));
+  const idx = valides.findIndex(x=>x.id===p.id);
+  const cumul = valides.slice(0, idx+1).reduce((s,x)=>s+x.montant, 0);
+  const totalDu = stu.classId ? totalDuFor(stu.id, stu.classId) : 0;
+  const reste = Math.max(totalDu - cumul, 0);
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  let y = 56;
+  const tx = db.school.logo ? 100 : 40;
+  if(db.school.logo){ try{ doc.addImage(db.school.logo, 'PNG', 40, 36, 50, 50); }catch(e){} }
+  doc.setFont('helvetica','bold'); doc.setFontSize(19); doc.setTextColor(27,42,74);
+  doc.text(db.school.name || 'École', tx, y); y += 20;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10.5); doc.setTextColor(107,107,99);
+  doc.text('Année scolaire '+p.year, tx, y);
+  // Bloc numéro à droite
+  doc.setFont('helvetica','bold'); doc.setFontSize(15); doc.setTextColor(168,120,32);
+  doc.text('REÇU DE PAIEMENT', W-40, 56, {align:'right'});
+  doc.setFontSize(12); doc.setTextColor(27,42,74);
+  doc.text('N° '+p.numero, W-40, 76, {align:'right'});
+  y = 112;
+  doc.setDrawColor(201,149,44); doc.setLineWidth(1.2); doc.line(40, y, W-40, y); y += 26;
+
+  doc.autoTable({
+    startY: y, theme: 'plain',
+    body: [
+      ['Reçu de', stu.name],
+      ['Classe', cls ? cls.name : '—'],
+      ['Date du paiement', p.date],
+      ['Mode de paiement', p.mode || '—'],
+      ['Objet', 'Frais de scolarité '+p.year],
+      ['Encaissé par', p.encaissePar || 'Administration']
+    ],
+    styles:{fontSize:11, cellPadding:5}, columnStyles:{0:{fontStyle:'bold', textColor:[107,107,99], cellWidth:150}, 1:{textColor:[27,42,74]}},
+    margin:{left:40,right:40}
+  });
+  y = doc.lastAutoTable.finalY + 18;
+
+  doc.setFillColor(251,241,222);
+  doc.roundedRect(40, y, W-80, 62, 6, 6, 'F');
+  doc.setFont('helvetica','bold'); doc.setFontSize(20); doc.setTextColor(168,120,32);
+  doc.text(p.montant.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g,' ')+' F CFA', 56, y+28);
+  doc.setFont('helvetica','italic'); doc.setFontSize(10); doc.setTextColor(107,107,99);
+  const lettres = 'Arrêté le présent reçu à la somme de : '+montantEnLettres(p.montant)+' francs CFA';
+  doc.text(doc.splitTextToSize(lettres, W-112), 56, y+46);
+  y += 84;
+
+  if(totalDu>0){
+    doc.autoTable({
+      startY: y,
+      head: [['Total scolarité','Total versé à ce jour','Reste à payer']],
+      body: [[totalDu.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g,' ')+' F', cumul.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g,' ')+' F', reste.toLocaleString('fr-FR').replace(/\u202f|\u00a0/g,' ')+' F']],
+      styles:{fontSize:10.5, halign:'center'}, headStyles:{fillColor:[27,42,74], halign:'center'}, margin:{left:40,right:40}
+    });
+    y = doc.lastAutoTable.finalY + 30;
+  }
+
+  // QR de vérification (bas gauche) + cachet (bas droite)
+  const blockY = Math.max(y, H-230);
+  const url = receiptVerifyURL(p);
+  if(drawQR(doc, url, 44, blockY+4, 104)){
+    doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(27,42,74);
+    doc.text('Vérifiez ce reçu', 162, blockY+20);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(90,90,90);
+    doc.text(doc.splitTextToSize('Scannez ce QR code avec un téléphone pour confirmer que ce paiement est bien enregistré par l\'établissement.', 170), 162, blockY+36);
+    doc.setFont('courier','normal'); doc.setFontSize(9); doc.setTextColor(27,42,74);
+    doc.text('Code : '+p.verifCode, 162, blockY+84);
+  }
+  if(db.school.signature){
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(107,107,99);
+    doc.text('Cachet et signature', W-170, blockY);
+    try{ doc.addImage(db.school.signature, 'PNG', W-180, blockY+8, 130, 80); }catch(e){}
+  }
+
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.5); doc.setTextColor(150,150,150);
+  doc.text('Reçu émis via Kampusya le '+todayISO()+'. Tout reçu dont le QR code ne renvoie pas vers une page de confirmation doit être considéré comme non valable.', 40, H-30, {maxWidth: W-80});
+  doc.save('Recu-'+p.numero+'.pdf');
+}
+
+/* ---------- PAGE PUBLIQUE DE VÉRIFICATION D'UN REÇU ---------- */
+async function showReceiptVerification(param){
+  const box = document.createElement('div');
+  box.id = 'verif-screen';
+  box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#F7F4EC;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto;font-family:inherit;';
+  box.innerHTML = '<div style="background:#fff;max-width:440px;width:100%;border-radius:14px;padding:28px 24px;box-shadow:0 8px 30px rgba(27,42,74,.12);text-align:center;">'+
+    '<div style="font-weight:700;color:#1B2A4A;font-size:18px;margin-bottom:4px;">Kampusya</div>'+
+    '<div style="color:#6B6B63;font-size:13px;margin-bottom:20px;">Vérification d\'un reçu de paiement</div>'+
+    '<div id="verif-body" style="color:#6B6B63;">Vérification en cours...</div>'+
+    '<a href="/" style="display:inline-block;margin-top:22px;color:#A87820;font-size:13px;">Aller à Kampusya</a></div>';
+  document.body.appendChild(box);
+  const body = document.getElementById('verif-body');
+  const [schoolId, code] = String(param).split('~');
+  try{
+    const res = await fetch('/.netlify/functions/verify-receipt?s='+encodeURIComponent(schoolId||'')+'&c='+encodeURIComponent(code||''));
+    const r = await res.json();
+    const row = (k,v)=>'<tr><td style="text-align:left;color:#6B6B63;padding:6px 8px 6px 0;font-size:13px;">'+k+'</td><td style="text-align:right;color:#1B2A4A;font-weight:600;padding:6px 0;font-size:13.5px;">'+v+'</td></tr>';
+    if(r.found && !r.annule){
+      body.innerHTML = '<div style="width:64px;height:64px;border-radius:50%;background:#E3F0E8;color:#2F6B4F;font-size:34px;line-height:64px;margin:0 auto 12px;">✓</div>'+
+        '<div style="font-size:19px;font-weight:700;color:#2F6B4F;margin-bottom:16px;">Reçu authentique</div>'+
+        '<table style="width:100%;border-collapse:collapse;">'+row('Établissement', r.schoolName)+row('N° du reçu', r.numero)+row('Élève', r.studentName)+row('Classe', r.className||'—')+
+        row('Montant', Number(r.montant).toLocaleString('fr-FR')+' F CFA')+row('Date', r.date)+row('Mode', r.mode||'—')+'</table>';
+    }else if(r.found && r.annule){
+      body.innerHTML = '<div style="width:64px;height:64px;border-radius:50%;background:#F6E1DF;color:#B23A33;font-size:34px;line-height:64px;margin:0 auto 12px;">!</div>'+
+        '<div style="font-size:19px;font-weight:700;color:#B23A33;margin-bottom:10px;">Reçu annulé</div>'+
+        '<div style="font-size:13.5px;">Le reçu <b>'+r.numero+'</b> de <b>'+r.schoolName+'</b> a été annulé le '+(r.annuleLe||'—')+'. Il n\'a plus de valeur.</div>';
+    }else{
+      body.innerHTML = '<div style="width:64px;height:64px;border-radius:50%;background:#F6E1DF;color:#B23A33;font-size:34px;line-height:64px;margin:0 auto 12px;">✕</div>'+
+        '<div style="font-size:19px;font-weight:700;color:#B23A33;margin-bottom:10px;">Reçu introuvable</div>'+
+        '<div style="font-size:13.5px;">Aucun paiement ne correspond à ce code. Ce reçu n\'est pas reconnu par l\'établissement. Contactez l\'administration de l\'école.</div>';
+    }
+  }catch(e){
+    body.innerHTML = 'Impossible de vérifier pour le moment. Vérifiez votre connexion internet et réessayez.';
+  }
 }
 
 /* ---------- TRANCHES (paiements échelonnés) ---------- */
@@ -2851,16 +3187,55 @@ function renderProf(){
   let body = '';
   if(ui.profTab==='appel') body = profAppel();
   if(ui.profTab==='notes') body = profNotes();
+  if(ui.profTab==='appreciations') body = profAppreciations();
   if(ui.profTab==='cahier') body = profCahier();
   if(ui.profTab==='manuel') body = profManuel();
   if(ui.profTab==='programme') body = profProgramme();
   if(ui.profTab==='agenda') body = agendaListHTML('prof', session.acctId);
   if(ui.profTab==='comportement') body = profComportement();
   if(ui.profTab==='messagerie') body = inboxHTML('prof', session.acctId);
-  const needsSelectors = ['appel','notes','cahier','programme'].includes(ui.profTab);
+  const needsSelectors = ['appel','notes','appreciations','cahier','programme'].includes(ui.profTab);
   return '<div class="page-head"><div><h1>Bonjour, '+prof.name+'</h1><div class="sub">'+roleLabel()+'</div></div></div>'+
   (needsSelectors ? '<div class="selector-row">'+classSelector()+subjectSelector()+'</div>' : '')+
   body;
+}
+
+const APPR_SUGGESTIONS = ['Excellent travail, continuez ainsi', 'Très bon travail', 'Bon travail', 'Assez bien, peut mieux faire', 'Travail passable, des efforts sont attendus', 'Travail insuffisant', 'Manque de sérieux'];
+function getSubjectAppreciation(studentId, classId, subjectId, periode){
+  return (db.subjectAppreciations||[]).find(a=>a.studentId===studentId && a.classId===classId && a.subjectId===subjectId && a.periode===periode && a.year===db.school.year);
+}
+function profAppreciations(){
+  if(!ui.profApprPeriode) ui.profApprPeriode = getPeriodes()[0];
+  const students = db.students.filter(s=>s.classId===ui.profClass);
+  const filled = students.filter(s=>{ const a=getSubjectAppreciation(s.id, ui.profClass, ui.profSubject, ui.profApprPeriode); return a && a.text; }).length;
+  return '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Appréciations — '+nameOf(db.subjects, ui.profSubject)+'</h3>'+
+    '<select onchange="ui.profApprPeriode=this.value; renderMain();">'+getPeriodes().map(p=>'<option value="'+p+'" '+(p===ui.profApprPeriode?'selected':'')+'>'+p+'</option>').join('')+'</select>'+
+  '</div>'+
+  '<div class="sub" style="margin-bottom:10px;">Votre appréciation apparaîtra sur le bulletin, dans la ligne de votre matière. Elle est enregistrée automatiquement. <b>'+filled+' / '+students.length+'</b> remplie(s).</div>'+
+  (students.length===0 ? '<div class="empty">Aucun élève dans cette classe.</div>' :
+  '<table><thead><tr><th>Élève</th><th>Moyenne</th><th>Appréciation</th></tr></thead><tbody>'+
+  students.map(stu=>{
+    const avg = studentSubjectAverageForPeriod(stu.id, ui.profClass, ui.profSubject, ui.profApprPeriode);
+    const a = getSubjectAppreciation(stu.id, ui.profClass, ui.profSubject, ui.profApprPeriode);
+    const val = a ? a.text.replace(/"/g,'&quot;') : '';
+    return '<tr><td><b>'+stu.name+'</b></td><td class="mono">'+(avg!==null?avg.toFixed(2):'—')+'</td>'+
+      '<td><input id="sappr-'+stu.id+'" list="appr-suggestions" maxlength="120" value="'+val+'" placeholder="Écrire ou choisir une appréciation" onchange="setSubjectAppreciation(\''+stu.id+'\', this.value)" style="width:100%;min-width:240px;padding:7px 9px;border:1.5px solid var(--line);border-radius:6px;font-size:13px;"></td></tr>';
+  }).join('')+
+  '</tbody></table>'+
+  '<datalist id="appr-suggestions">'+APPR_SUGGESTIONS.map(t=>'<option value="'+t+'">').join('')+'</datalist>')+
+  '</div>';
+}
+function setSubjectAppreciation(studentId, text){
+  if(!db.subjectAppreciations) db.subjectAppreciations=[];
+  text = (text||'').trim();
+  const prof = profSelf();
+  db.subjectAppreciations = db.subjectAppreciations.filter(a=>!(a.studentId===studentId && a.classId===ui.profClass && a.subjectId===ui.profSubject && a.periode===ui.profApprPeriode && a.year===db.school.year));
+  if(text){
+    db.subjectAppreciations.push({ id: uid('sap'), studentId, classId: ui.profClass, subjectId: ui.profSubject, periode: ui.profApprPeriode,
+      year: db.school.year, text, profId: prof.id, profName: prof.name, updatedAt: todayISO() });
+  }
+  saveData();
+  showToast('Appréciation enregistrée');
 }
 
 function profAppel(){
@@ -3517,6 +3892,17 @@ function childSelector(){
   '</select>';
 }
 
+function parentPaiements(child){
+  const total = totalDuFor(child.id, child.classId), paye = paidFor(child.id), reste = Math.max(total-paye,0);
+  return '<div class="cards-row" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));">'+
+    '<div class="stat-card"><div class="n">'+total.toLocaleString('fr-FR')+' F</div><div class="l">Scolarité '+db.school.year+'</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:var(--green);">'+paye.toLocaleString('fr-FR')+' F</div><div class="l">Déjà versé</div></div>'+
+    '<div class="stat-card"><div class="n" style="color:'+(reste>0?'var(--red)':'var(--green)')+';">'+reste.toLocaleString('fr-FR')+' F</div><div class="l">Reste à payer</div></div>'+
+  '</div>'+
+  '<div class="panel" style="overflow-x:auto;"><div class="panel-head"><h3>Mes reçus</h3></div>'+
+  '<div class="sub" style="margin-bottom:8px;">Chaque reçu porte un numéro unique et un QR code qui prouve que le paiement est bien enregistré par l\'établissement.</div>'+
+  recusTableHTML(child.id, false)+'</div>';
+}
 function renderParent(){
   const par = parentSelf();
   if(!par.studentIds.length){
@@ -3530,6 +3916,7 @@ function renderParent(){
   if(ui.parentTab==='absences') body = parentAbsences(child);
   if(ui.parentTab==='notes') body = parentNotes(child);
   if(ui.parentTab==='bulletins') body = eleveBulletins(child);
+  if(ui.parentTab==='paiements') body = parentPaiements(child);
   if(ui.parentTab==='cahier') body = parentCahierBody(child);
   if(ui.parentTab==='manuel') body = eleveManuel(child);
   if(ui.parentTab==='agenda') body = agendaListHTML('parent', session.acctId);
@@ -4002,6 +4389,8 @@ if('serviceWorker' in navigator){
    INIT
    ============================================================ */
 (async function init(){
+  const verifParam = new URLSearchParams(location.search).get('verif');
+  if(verifParam){ showReceiptVerification(verifParam); return; }
   const { data: { session: authSession } } = await sb.auth.getSession();
   if(authSession){
     await afterLogin();
